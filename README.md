@@ -11,8 +11,9 @@ maths; page-level citations. Built on Groq's free tier, served on localhost.
 | [docs/architecture.md](docs/architecture.md) | How, with the decision log |
 | [docs/implementation_plan.md](docs/implementation_plan.md) | Phase-by-phase build plan and exit criteria |
 
-**Build status:** Phase 0 — foundation and Groq model layer. Later phases add ingestion, the
-query pipeline, the localhost UI and the cache.
+**Build status:** Phase 1 complete — parse and validate. Phase 0 (foundation, Groq model layer)
+and Phase 1 (Docling parse, statement validation, figure candidates) are done; Phase 2 adds
+chunking, enrichment and the Chroma/BM25 index.
 
 ## Environment setup (Phase 0)
 
@@ -51,6 +52,26 @@ make smoke    # .venv/Scripts/python scripts/smoke_llm.py   (3 Groq calls, needs
 `tests/fixtures/smoke_image.png` — and checks that three `ok` lines were appended to
 `data/logs/llm_usage.jsonl`.
 
+## Ingestion (Phase 1: parse and validate)
+
+```bash
+cp /path/to/2026_NVIDIA_ANNUAL_REPORT.pdf data/raw/
+make ingest        # .venv-ingest/Scripts/python -m rag.ingest.run   (~5 min on CPU for Docling)
+```
+
+Stages (each writes plain files, so later stages never import Docling):
+
+| Stage | Module | Output |
+|---|---|---|
+| parse | `rag.ingest.parse` | `data/parsed/docling.json` (+ `docling.meta.json`; re-runs skip when the PDF hash is unchanged) |
+| elements | `rag.ingest.elements`, `sections.py` | `data/parsed/elements.jsonl` — every text/heading/table/picture with page, bbox, section, subsection, statement |
+| validate | `rag.ingest.validate` | `data/parsed/statements.json` — pdfplumber rows for the balance sheet, income statement and cash flow, cross-checked cell by cell against Docling; **ingestion stops if total assets ≠ total liabilities + equity** |
+| figures | `rag.ingest.figures` | `data/parsed/figure_candidates.json`, `data/index/figures/*.png` (200 DPI crops), `data/index/pages/*.webp` (thumbnails) |
+| report | `rag.ingest.report` | `data/parsed/ingestion_report.json` and [docs/reports/ingestion_phase1.md](docs/reports/ingestion_phase1.md) |
+
+`--stage <name>` runs one stage; `--force-parse` re-runs Docling; `--no-pages` skips thumbnails.
+Phase 1 makes **no** Groq calls.
+
 ## Configuration
 
 | File | Contents |
@@ -73,9 +94,10 @@ docs/           problem statement · architecture · plan · reports/
 src/rag/
   core/         settings.py config.py logging.py tokens.py pacing.py ledger.py
   llm.py        role-based model layer: text() · json() · vision_json(); pacing, retries, ledger
-  ingest/ query/ compress/ cache/ calc/ api/                 (later phases)
+  ingest/       run.py parse.py elements.py sections.py validate.py figures.py report.py
+  query/ compress/ cache/ calc/ api/                         (later phases)
 scripts/        smoke_llm.py
-tests/          unit tests (mocked provider; no network)
+tests/          unit tests (mocked provider; no network). Ingestion tests read the PDF when present
 frontend/ eval/                                             (Phase 3+)
 ```
 
