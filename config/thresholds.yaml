@@ -1,0 +1,30 @@
+# Tunables (architecture §11.1). This file's hash is part of `retrieval_config_hash` (§5.7),
+# so any edit here invalidates the semantic cache by design.
+retrieval:
+  dense_top_k: 30
+  sparse_top_k: 30
+  rrf_k: 60
+  final_k: 8
+  max_retrieval_queries: 4
+rerank:
+  model: BAAI/bge-reranker-base
+  lightweight_alternative: Xenova/ms-marco-MiniLM-L-6-v2
+  candidates: 30
+  margin_skip_ratio: 0.30
+  drop_floor_logit: -2.0           # calibrate after embedder gate
+  min_keep: 3
+compression:
+  skip_budget_tokens: 1500
+  dedupe_cosine: 0.95
+  sentence_relevance_tau: 0.55     # calibrate
+  numeric_density_cap: 0.15
+  min_reduction_for_llm: 0.40      # quota mode on free tier (§6.6)
+  stage_b_thresholds: {keep: 0.35, llm: 0.60}
+cache:
+  l1: {max_entries: 512, ttl_seconds: 3600, policy: lru}
+  l2:
+    max_entries: 5000
+    similarity: {slot_rich: 0.90, slot_poor: 0.95}       # 0.90 = RedisVL default distance 0.1
+    ttl_seconds: {filed_fact: 2592000, analytical: 604800, time_anchored: 86400, negative: 86400}
+    eviction: {policy: redis_volatile_lfu, lfu_init_val: 5, lfu_log_factor: 10, lfu_decay_minutes: 1440}
+  sweep_interval_seconds: 900

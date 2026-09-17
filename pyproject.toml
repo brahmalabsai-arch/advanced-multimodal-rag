@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-balance-sheet"
+version = "0.1.0"
+description = "Advanced multimodal RAG for balance sheet analysis (NVIDIA FY2026)"
+requires-python = ">=3.11"
+# Runtime dependencies live in requirements-*.txt (architecture §8.8); this package
+# only exposes `src/rag` as an importable package.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts", "eval"]
+extend-exclude = ["data", "frontend/vendor", ".venv", ".venv-ingest"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rag"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

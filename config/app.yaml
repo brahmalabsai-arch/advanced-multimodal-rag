@@ -1,0 +1,11 @@
+# Application settings (architecture §11.3). Localhost only during the build (D-44).
+server: {host: 127.0.0.1, port: 8000, workers: 1}
+env: ${APP_ENV:dev}
+dev_clock: {enabled_in: [dev], max_offset_days: 400}
+paths:
+  raw: data/raw
+  parsed: data/parsed
+  index: data/index
+  cache: data/cache
+  logs: data/logs
+  frontend: frontend

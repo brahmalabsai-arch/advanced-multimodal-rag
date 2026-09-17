@@ -1,0 +1,35 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environments (D-49: two of them)
+.venv/
+.venv-ingest/
+
+# Data: the PDF, parsed artifacts, indexes, caches and logs are rebuilt locally.
+# Keep the folder skeleton and any committed sample manifests.
+data/**
+!data/**/
+!data/**/.gitkeep
+!data/**/manifest.sample.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# The corpus PDF belongs in data/raw/ (Phase 1). Keep large binaries out of git.
+docs/*.pdf

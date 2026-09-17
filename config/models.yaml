@@ -1,0 +1,59 @@
+# Model profiles (architecture §7, §11.2). Graph nodes ask for a ROLE (small | large | vision),
+# never for a provider or a model id. `MODEL_PROFILE` in .env selects the profile.
+#
+# Model ids checked against console.groq.com on 2026-09-17 (decision D-50):
+#   llama-3.1-8b-instant and llama-3.3-70b-versatile were shut down for free/developer tiers
+#   on 2026-08-16; meta-llama/llama-4-scout-17b-16e-instruct on 2026-07-17. The replacements
+#   below are the ones Groq recommends on its deprecations page.
+#
+# Pacing values are the Free-plan limits from console.groq.com/docs/rate-limits (2026-09-17).
+# Groq applies limits per organisation per model. Re-check after any plan change.
+
+active_profile: ${MODEL_PROFILE:groq_build}
+
+profiles:
+  groq_build:                       # ACTIVE for the whole build (D-45)
+    small:
+      provider: groq
+      model: openai/gpt-oss-20b
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000}
+      # Hidden reasoning still counts toward max_tokens (~20 tokens at low effort);
+      # never set max_tokens below ~64 for this model.
+      provider_kwargs: {reasoning_format: hidden, reasoning_effort: low}
+    large:
+      provider: groq
+      model: openai/gpt-oss-120b
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000}
+      provider_kwargs: {reasoning_format: hidden, reasoning_effort: medium}
+    vision:
+      provider: groq
+      model: qwen/qwen3.8-27b       # vision + JSON mode; max 3 images / request, 2048 tokens per image
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000}
+      max_images_per_request: 3
+      provider_kwargs: {reasoning_format: hidden}
+    context_budget_tokens: 2500     # must sit well under the 8K TPM ceiling (§7.2)
+    structured_output: json_mode_validate
+    notes: >
+      Free tier. Answer generation on gpt-oss-120b; support work on gpt-oss-20b;
+      figure classification/description on qwen3.8-27b (documented exception to P2:
+      there is no smaller vision model on Groq).
+
+  anthropic:                        # TEMPLATE — inactive until model switch (F1). Needs API billing.
+    small:  {provider: anthropic, model: claude-haiku-4-5-20251001}
+    large:  {provider: anthropic, model: claude-sonnet-5}      # bake-off alternative: claude-opus-5
+    vision: {provider: anthropic, model: claude-sonnet-5}
+    context_budget_tokens: 6000
+    structured_output: native
+    pacing: {rpm: 50, tpm: 40000}   # placeholder; read from the Anthropic console at switch time
+
+  gemini:                           # TEMPLATE — inactive until model switch (F1). Verify ids at switch.
+    small:  {provider: google, model: gemini-2.5-flash-lite}
+    large:  {provider: google, model: gemini-2.5-pro}
+    vision: {provider: google, model: gemini-2.5-pro}
+    context_budget_tokens: 6000
+    structured_output: native
+    pacing: {rpm: 15, tpm: 250000} # placeholder; read from AI Studio at switch time
+
+ingestion_enrichment:
+  figures: vision                   # role name, resolved through the active profile (§7.3)
+  table_summaries: small

@@ -1,0 +1,3 @@
+# Installed only at the model switch (future step F1). Never installed during the Groq-only build.
+langchain-anthropic>=1.0
+langchain-google-genai>=3.0
