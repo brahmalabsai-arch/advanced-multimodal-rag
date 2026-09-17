@@ -15,7 +15,7 @@ endif
 PY        := $(VENV_BIN)/python
 PY_INGEST := $(INGEST_BIN)/python
 
-.PHONY: setup setup-serve setup-ingest lock ingest serve test lint format eval bench smoke clean
+.PHONY: setup setup-serve setup-ingest lock ingest index-base inspect serve test lint format eval bench smoke clean
 
 setup: setup-serve setup-ingest
 
@@ -36,9 +36,17 @@ lock:
 	$(PY) -m pip freeze --exclude-editable > requirements-dev.lock.txt
 	$(PY_INGEST) -m pip freeze --exclude-editable > requirements-ingest.lock.txt
 
-# Phase 1+: parse -> chunk -> enrich (Groq, cached) -> index
+# parse -> elements -> validate -> figures -> report -> chunk (Groq, cached) -> index (bge-small)
 ingest:
 	$(PY_INGEST) -m rag.ingest.run
+
+# Second index with the challenger embedder for the Phase 3 embedder gate (no Groq calls)
+index-base:
+	$(PY_INGEST) -m rag.ingest.run --stage index --embedder bge-base
+
+inspect:
+	$(PY) scripts/inspect_index.py --bm25 "inventories" -k 3
+	$(PY) scripts/inspect_index.py --dense "inventories at fiscal year end 2026" -k 3
 
 # Phase 3+: API + HTML on localhost only (D-44). One worker keeps one L1 cache and one Chroma writer.
 serve:

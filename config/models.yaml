@@ -28,9 +28,12 @@ profiles:
     vision:
       provider: groq
       model: qwen/qwen3.8-27b       # vision + JSON mode; max 3 images / request, 2048 tokens per image
-      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000}
+      # Console limit is 8000 TPM; Groq bills image tokens above our 2048 estimate, so pace at 6000.
+      # Groq also enforces 1000 *output* tokens per minute and charges the requested max_tokens.
+      pacing: {rpm: 30, tpm: 6000, rpd: 1000, tpd: 200000, otpm: 1000}
       max_images_per_request: 3
-      provider_kwargs: {reasoning_format: hidden}
+      # Qwen3 reasoning tokens count toward max_tokens and OTPM; descriptions do not need them.
+      provider_kwargs: {reasoning_format: hidden, reasoning_effort: none}
     context_budget_tokens: 2500     # must sit well under the 8K TPM ceiling (§7.2)
     structured_output: json_mode_validate
     notes: >

@@ -65,6 +65,11 @@ class Pacing(BaseModel):
 
     rpm: int = Field(gt=0, description="requests per minute")
     tpm: int = Field(gt=0, description="tokens per minute")
+    otpm: int | None = Field(
+        default=None,
+        gt=0,
+        description="output tokens per minute; Groq charges the *requested* max_tokens against it",
+    )
     rpd: int | None = Field(default=None, gt=0, description="requests per day (informational)")
     tpd: int | None = Field(default=None, gt=0, description="tokens per day (informational)")
 

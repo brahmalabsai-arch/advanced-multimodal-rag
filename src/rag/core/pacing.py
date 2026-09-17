@@ -73,17 +73,25 @@ class RateLimiter:
         self.max_wait_seconds = max_wait_seconds
         self.requests = TokenBucket(pacing.rpm, pacing.rpm / 60.0, clock)
         self.tokens = TokenBucket(pacing.tpm, pacing.tpm / 60.0, clock)
+        self.output_tokens = (
+            TokenBucket(pacing.otpm, pacing.otpm / 60.0, clock) if pacing.otpm else None
+        )
         self.total_wait_seconds = 0.0
         self.waits = 0
 
-    def acquire(self, estimated_tokens: int) -> float:
-        """Block until one request and `estimated_tokens` fit; return seconds waited."""
+    def acquire(self, estimated_tokens: int, requested_output_tokens: int = 0) -> float:
+        """Block until one request, `estimated_tokens` and the requested output budget fit.
+
+        Returns seconds waited.
+        """
         waited = 0.0
         with self._lock:
             while True:
                 wait = max(
                     self.requests.seconds_until(1), self.tokens.seconds_until(estimated_tokens)
                 )
+                if self.output_tokens is not None and requested_output_tokens:
+                    wait = max(wait, self.output_tokens.seconds_until(requested_output_tokens))
                 if wait <= 0:
                     break
                 if waited + wait > self.max_wait_seconds:
@@ -95,6 +103,8 @@ class RateLimiter:
                 waited += wait
             self.requests.consume(1)
             self.tokens.consume(estimated_tokens)
+            if self.output_tokens is not None and requested_output_tokens:
+                self.output_tokens.consume(requested_output_tokens)
         if waited > 0:
             self.waits += 1
             self.total_wait_seconds += waited

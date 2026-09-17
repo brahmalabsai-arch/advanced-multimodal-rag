@@ -11,9 +11,10 @@ maths; page-level citations. Built on Groq's free tier, served on localhost.
 | [docs/architecture.md](docs/architecture.md) | How, with the decision log |
 | [docs/implementation_plan.md](docs/implementation_plan.md) | Phase-by-phase build plan and exit criteria |
 
-**Build status:** Phase 1 complete — parse and validate. Phase 0 (foundation, Groq model layer)
-and Phase 1 (Docling parse, statement validation, figure candidates) are done; Phase 2 adds
-chunking, enrichment and the Chroma/BM25 index.
+**Build status:** Phase 2 complete — the index exists. Phase 0 (foundation, Groq model layer),
+Phase 1 (Docling parse, statement validation, figure candidates) and Phase 2 (semantic chunks,
+row facts, figure descriptions, Chroma + BM25 index) are done; Phase 3 adds the baseline RAG
+pipeline and the localhost UI.
 
 ## Environment setup (Phase 0)
 
@@ -69,8 +70,20 @@ Stages (each writes plain files, so later stages never import Docling):
 | figures | `rag.ingest.figures` | `data/parsed/figure_candidates.json`, `data/index/figures/*.png` (200 DPI crops), `data/index/pages/*.webp` (thumbnails) |
 | report | `rag.ingest.report` | `data/parsed/ingestion_report.json` and [docs/reports/ingestion_phase1.md](docs/reports/ingestion_phase1.md) |
 
-`--stage <name>` runs one stage; `--force-parse` re-runs Docling; `--no-pages` skips thumbnails.
-Phase 1 makes **no** Groq calls.
+| chunk | `rag.ingest.chunk_semantic`, `tables.py`, `figures.py`, `enrich.py` | `data/parsed/chunks.jsonl` + `sentences.jsonl` — semantic text chunks (120–450 tokens, corpus-level p90 split), table chunks with one-line summaries (small model), row facts for the three statements with numeric metadata, figure chunks described by the vision model (photos/logos/decoratives dropped; charts linked to their companion table). Every LLM result is cached in `data/parsed/enrichment/`, so a re-run makes **zero** Groq calls |
+| index | `rag.ingest.index` | `data/index/` — Chroma `report_chunks` (cosine, explicit `bge-small` vectors), `bm25.pkl` (finance-aware tokenizer), `sentences.jsonl` + `sentence_emb.npy` sidecars, `manifest.json` with `corpus_version` |
+
+`--stage <name>` runs one stage; `--force-parse` re-runs Docling; `--no-pages` skips thumbnails;
+`--no-llm` chunks without Groq (no summaries or figure chunks). `make index-base` builds the
+`bge-base` challenger index under `data/index_bge_base/` for the Phase 3 embedder gate.
+
+Poke at the index from the serving environment:
+
+```bash
+.venv/Scripts/python scripts/inspect_index.py --bm25 "inventories" -k 5
+.venv/Scripts/python scripts/inspect_index.py --dense "inventories at fiscal year end 2026" -k 5
+.venv/Scripts/python scripts/inspect_index.py --modality figure
+```
 
 ## Configuration
 
@@ -93,10 +106,12 @@ data/           raw/ parsed/ index/ cache/ logs/            (gitignored; rebuilt
 docs/           problem statement · architecture · plan · reports/
 src/rag/
   core/         settings.py config.py logging.py tokens.py pacing.py ledger.py
+                schema.py (chunk metadata contract) embeddings.py (fastembed) bm25.py
   llm.py        role-based model layer: text() · json() · vision_json(); pacing, retries, ledger
   ingest/       run.py parse.py elements.py sections.py validate.py figures.py report.py
+                sentences.py chunk_semantic.py tables.py enrich.py index.py
   query/ compress/ cache/ calc/ api/                         (later phases)
-scripts/        smoke_llm.py
+scripts/        smoke_llm.py inspect_index.py
 tests/          unit tests (mocked provider; no network). Ingestion tests read the PDF when present
 frontend/ eval/                                             (Phase 3+)
 ```

@@ -221,6 +221,10 @@ def test_retry_after_parsing() -> None:
 
 def test_is_retryable() -> None:
     assert is_retryable(FakeStatusError(429))
+    assert is_retryable(FakeStatusError(429, "Please try again in 20.3s"))
+    # Daily-quota exhaustion: not worth blocking the request for
+    assert not is_retryable(FakeStatusError(429, "Please try again in 19m"))
+    assert not is_retryable(FakeStatusError(429, headers={"retry-after": "600"}))
     assert is_retryable(FakeStatusError(503))
     assert not is_retryable(FakeStatusError(401))
     assert is_retryable(type("APIConnectionError", (Exception,), {})())

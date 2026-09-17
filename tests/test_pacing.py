@@ -64,3 +64,15 @@ def test_reconcile_charges_underestimate(fake_clock) -> None:
 def test_token_bucket_rejects_bad_config(fake_clock) -> None:
     with pytest.raises(ValueError):
         TokenBucket(0, 1, fake_clock)
+
+
+def test_output_tokens_per_minute_limit(fake_clock) -> None:
+    limiter = RateLimiter(
+        Pacing(rpm=30, tpm=100_000, otpm=1000), clock=fake_clock, sleep=fake_clock.sleep
+    )
+    assert limiter.acquire(100, requested_output_tokens=900) == 0.0
+    waited = limiter.acquire(100, requested_output_tokens=900)  # only 100 left; need 800 more
+    assert waited == pytest.approx(800 / (1000 / 60))
+    # Without an OTPM ceiling the output budget is ignored.
+    free = RateLimiter(Pacing(rpm=30, tpm=100_000), clock=fake_clock, sleep=fake_clock.sleep)
+    assert free.acquire(100, requested_output_tokens=5000) == 0.0

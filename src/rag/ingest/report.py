@@ -270,3 +270,50 @@ def write_report(
     json_path.write_text(json.dumps(report.model_dump(mode="json"), indent=2), encoding="utf-8")
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(render_markdown(report, candidates), encoding="utf-8")
+
+
+# ================================================================= Phase 2 report
+
+
+def render_phase2_markdown(
+    chunk_summary: dict[str, Any],
+    manifests: list[dict[str, Any]],
+    figure_rows: list[tuple[str, str, str, int, str | None]],
+    ledger_totals: dict[str, dict[str, int]],
+) -> str:
+    """Markdown summary of chunking, enrichment and indexing for docs/reports."""
+    lines: list[str] = ["# Ingestion report — Phase 2 (chunk, enrich, index)\n"]
+    counts = chunk_summary["chunk_counts"]
+    lines.append(
+        f"Generated {datetime.now(UTC).isoformat(timespec='seconds')} · chunks: "
+        + ", ".join(f"{k} {v}" for k, v in counts.items())
+        + f" (total {chunk_summary['chunks_total']}) · "
+        f"sentences {chunk_summary['sentences_total']} · "
+        f"text blocks {chunk_summary['text_blocks']} · split threshold p90 = "
+        f"{chunk_summary['split_threshold']:.4f}\n"
+    )
+    lines.append("## Indexes\n")
+    lines.append("| Index | Embedder | Dim | corpus_version | Chunks |\n|---|---|---|---|---|")
+    for m in manifests:
+        lines.append(
+            f"| `{m['dir']}` | {m['embedder']} | {m['embedding_dim']} | `{m['corpus_version']}` | "
+            f"{m['chunks_total']} |"
+        )
+    lines.append("")
+    lines.append("## Enrichment (Groq, cached)\n")
+    enr = chunk_summary.get("enrichment", {})
+    lines.append(
+        f"Models: {chunk_summary.get('enrichment_models')} · cache hits {enr.get('hits')} / "
+        f"misses {enr.get('misses')} on the last run · figures dropped: "
+        f"{chunk_summary.get('figures_dropped')}\n"
+    )
+    lines.append("| Ledger job | Calls | ok | Tokens in | Tokens out |\n|---|---|---|---|---|")
+    for job, t in ledger_totals.items():
+        lines.append(f"| {job} | {t['calls']} | {t['ok']} | {t['tokens_in']} | {t['tokens_out']} |")
+    lines.append("")
+    lines.append("## Figure classification\n")
+    lines.append("| Figure | Type | Title | Data points | Companion table |\n|---|---|---|---|---|")
+    for fid, ftype, title, npts, companion in figure_rows:
+        lines.append(f"| `{fid}` | {ftype} | {title[:70]} | {npts} | {companion or ''} |")
+    lines.append("")
+    return "\n".join(lines)

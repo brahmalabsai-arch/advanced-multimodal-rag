@@ -1099,12 +1099,14 @@ advanced-rag-balance-sheet/
 │   ├── cache/                        # chroma/ (semantic_cache)
 │   └── logs/                         # traces.jsonl, llm_usage.jsonl
 ├── src/rag/
-│   ├── ingest/   parse.py sections.py validate.py chunk_semantic.py tables.py figures.py enrich.py index.py
+│   ├── ingest/   run.py parse.py elements.py sections.py validate.py report.py sentences.py
+│   │             chunk_semantic.py tables.py figures.py enrich.py index.py
 │   ├── query/    slots.py scope.py analyze.py retrieve.py rerank.py assemble.py generate.py verify.py
 │   ├── compress/ features.py classifier.py compressors.py fidelity.py classifier_weights.json
 │   ├── cache/    l1.py l2.py ttl.py lfu.py admission.py versions.py sweeper.py
 │   ├── calc/     calculator.py
-│   ├── core/     clock.py settings.py logging.py tokens.py
+│   ├── core/     clock.py settings.py logging.py tokens.py config.py pacing.py ledger.py
+│   │             schema.py (chunk metadata contract) embeddings.py (fastembed) bm25.py
 │   ├── llm.py  graph.py
 │   └── api/      main.py routes_ask.py routes_admin.py
 ├── frontend/
@@ -1370,6 +1372,8 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 | D-48 | Minimal HTML UI lands in Phase 3 and grows with each component | UI only at the end | Proposed | [B7-Q3], implementation plan |
 | D-49 | Two virtual environments (ingest vs serve/dev) | One environment | Proposed | P7 §14.2 |
 | D-50 | `groq_build` models refreshed after Groq deprecations: `openai/gpt-oss-20b` (small), `openai/gpt-oss-120b` (large), `qwen/qwen3.8-27b` (vision); free-plan pacing 30 RPM / 8K TPM recorded | Keep v0.3 Llama ids (shut down for free tier) | Accepted (Phase 0, 2026-09-17) | §7.2, `config/models.yaml` |
+| D-52 | Groq free tier enforces per-model limits the console table does not show: **output tokens per minute** (vision 1,000 OTPM, charged on the *requested* `max_tokens`) and a rolling **200K tokens per day**. Pacing gained an `otpm` bucket, vision `max_tokens` is 500 with `reasoning_effort: none`, and a `retry-after` over 120 s fails fast so the cache-driven re-run picks the item up later | Block inside the request until the window frees | Accepted (Phase 2) | §7.2, `core/pacing.py`, `llm.py` |
+| D-53 | Chunk boundary detection always uses `bge-small` sentence embeddings (one `chunks.jsonl`); each index re-embeds the same chunks with its own embedder. Keeps the Phase 3 embedder gate a retrieval-only comparison | Re-chunk per embedder | Accepted (Phase 2) | §3.3, `ingest/run.py` |
 | D-51 | Build machine runs Python 3.13 (3.11 not installed); `requires-python >= 3.11` kept so either works. Docling/spaCy/onnxruntime wheel availability on 3.13 verified when `.venv-ingest` is created | Install 3.11 separately | Proposed (Phase 0) | §8 |
 
 ---

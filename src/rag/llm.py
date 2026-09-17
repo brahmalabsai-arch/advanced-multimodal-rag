@@ -40,6 +40,9 @@ log = get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+# A retry-after longer than this (daily-quota 429s say "try again in 19m") is not worth blocking
+# a request for; the call fails fast and a later cache-driven re-run picks the item up.
+MAX_RETRY_AFTER_SECONDS = 120.0
 DEFAULT_EXPECTED_OUTPUT_TOKENS = 512
 _TRY_AGAIN_IN = re.compile(r"try again in\s+([0-9.]+)\s*(ms|s|m)\b", re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -83,6 +86,9 @@ def _status_code(exc: BaseException) -> int | None:
 def is_retryable(exc: BaseException) -> bool:
     code = _status_code(exc)
     if code is not None:
+        if code == 429:
+            hinted = retry_after_seconds(exc)
+            return hinted is None or hinted <= MAX_RETRY_AFTER_SECONDS
         return code in RETRYABLE_STATUS
     name = type(exc).__name__
     return any(marker in name for marker in ("Connection", "Timeout"))
@@ -443,7 +449,11 @@ class LLMClient:
                 with attempt:
                     retries = attempt.retry_state.attempt_number - 1
                     attempts_made = retries + 1
-                    waited = limiter.acquire(estimate) if limiter else 0.0
+                    waited = (
+                        limiter.acquire(estimate, max_tokens or DEFAULT_EXPECTED_OUTPUT_TOKENS)
+                        if limiter
+                        else 0.0
+                    )
                     started = self._clock()
                     try:
                         result = runnable.invoke(messages)
