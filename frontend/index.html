@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NVIDIA FY2026 — Balance Sheet RAG</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>Balance Sheet Analysis — NVIDIA FY2026</h1>
+      <p class="sub">Advanced multimodal RAG · localhost build · <span id="status" class="status">connecting…</span></p>
+    </div>
+  </header>
+
+  <main>
+    <section class="ask">
+      <form id="ask-form">
+        <textarea id="question" rows="2" placeholder="e.g. What is the current ratio as of Jan 25, 2026?" autofocus></textarea>
+        <div class="controls">
+          <label class="toggle"><input type="checkbox" id="bypass"> bypass cache</label>
+          <button id="submit" type="submit">Ask</button>
+        </div>
+      </form>
+      <div class="examples" id="examples">
+        <span>Try:</span>
+        <button type="button" data-q="What were NVIDIA's total assets as of Jan 25, 2026?">total assets</button>
+        <button type="button" data-q="What is the current ratio as of Jan 25, 2026?">current ratio</button>
+        <button type="button" data-q="How much did inventories grow year-over-year?">inventories YoY</button>
+        <button type="button" data-q="What drove the first-quarter fiscal 2026 charge related to H20?">H20 charge</button>
+        <button type="button" data-q="What are the layers in NVIDIA's five-layer cake?">five-layer cake</button>
+        <button type="button" data-q="How did NVIDIA's 5-year total return compare to the S&P 500 and Nasdaq 100?">total return chart</button>
+      </div>
+    </section>
+
+    <section id="result" class="result hidden">
+      <div class="answer-head">
+        <span class="badge" id="cache-tier">—</span>
+        <span class="badge" id="intent">—</span>
+        <span class="badge" id="confidence">—</span>
+        <span class="badge" id="answer-class">—</span>
+        <span class="meta" id="latency"></span>
+      </div>
+      <div id="warning" class="warning hidden"></div>
+      <article id="answer" class="answer"></article>
+      <div id="figures" class="figures"></div>
+      <div class="citations">
+        <h3>Citations</h3>
+        <div id="citations" class="chips"></div>
+      </div>
+
+      <details id="debug" class="debug">
+        <summary>Debug panel — retrieval, calculator, tokens and latency</summary>
+        <div class="debug-grid">
+          <div>
+            <h4>Retrieval (dense ⊕ BM25 → RRF)</h4>
+            <table id="retrieval-table" class="tbl">
+              <thead><tr><th>#</th><th>chunk</th><th>modality</th><th>page</th><th>dense</th><th>bm25</th><th>rrf</th><th>in ctx</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <h4>Calculator</h4>
+            <pre id="calc"></pre>
+            <h4>Verification</h4>
+            <pre id="verify"></pre>
+            <h4>Tokens &amp; latency</h4>
+            <pre id="tokens"></pre>
+          </div>
+        </div>
+        <h4>Context blocks sent to the model (<span id="ctx-tokens"></span> tokens)</h4>
+        <div id="context-blocks" class="blocks"></div>
+        <p class="meta">request <code id="request-id"></code> · <a id="trace-link" href="#" target="_blank">trace JSON</a> · corpus <code id="corpus-version"></code></p>
+      </details>
+    </section>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog">
+    <div class="modal-body">
+      <div class="modal-head"><span id="modal-title"></span><button id="modal-close" type="button">×</button></div>
+      <img id="modal-img" alt="page thumbnail">
+    </div>
+  </div>
+
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -11,10 +11,11 @@ maths; page-level citations. Built on Groq's free tier, served on localhost.
 | [docs/architecture.md](docs/architecture.md) | How, with the decision log |
 | [docs/implementation_plan.md](docs/implementation_plan.md) | Phase-by-phase build plan and exit criteria |
 
-**Build status:** Phase 2 complete — the index exists. Phase 0 (foundation, Groq model layer),
-Phase 1 (Docling parse, statement validation, figure candidates) and Phase 2 (semantic chunks,
-row facts, figure descriptions, Chroma + BM25 index) are done; Phase 3 adds the baseline RAG
-pipeline and the localhost UI.
+**Build status:** Phase 3 complete — questions are answered end-to-end in the browser with
+citations and deterministic calculations. Done: Phase 0 (foundation, Groq model layer), Phase 1
+(Docling parse, statement validation), Phase 2 (chunks, row facts, figures, Chroma + BM25 index),
+Phase 3 (hybrid retrieval, calculator, generation contract, verifier, FastAPI + HTML UI, golden
+set, embedder gate). Next: Phase 4 (slots, scope gate, expansion, reranking).
 
 ## Environment setup (Phase 0)
 
@@ -85,6 +86,42 @@ Poke at the index from the serving environment:
 .venv/Scripts/python scripts/inspect_index.py --modality figure
 ```
 
+## Serve and ask (Phase 3)
+
+```bash
+make serve          # .venv/Scripts/python -m uvicorn rag.api.main:app --host 127.0.0.1 --port 8000
+                    # → open http://127.0.0.1:8000  (API docs at /docs)
+make ask Q="What is the current ratio as of Jan 25, 2026?"     # in-process, no server needed
+.venv/Scripts/python scripts/ask_cli.py --api "How much did goodwill grow year-over-year?"
+```
+
+The page has an ask box, the rendered answer with clickable `[C1]` / `[K1]` citation chips (page
+thumbnail modal), the figure image for visual answers, and a debug panel showing dense/BM25/RRF
+scores per candidate, the calculator inputs and result, verification, tokens and latency per node.
+
+Pipeline (LangGraph, `src/rag/graph.py`): `analyze → retrieve → calculate → assemble → generate
+→ verify` with one regeneration on a failed verification.
+
+| Node | Module | What it does |
+|---|---|---|
+| analyze | `query/analyze.py` | rule-based intent (7 classes; slots and LLM fallback arrive in Phase 4) |
+| retrieve | `query/retrieve.py` | exact-cosine dense top-30 ⊕ BM25 top-30 → RRF (k=60) → top-8; row facts pull their parent table, figures their companion table |
+| calculate | `calc/calculator.py` + `config/formulas.yaml` | ratios and YoY from row-fact metadata only; whitelisted AST evaluator; missing inputs reported, never guessed |
+| assemble | `query/assemble.py` | `[C3 \| Form 10-K › … \| PDF p.141 \| table]` headers, 2,500-token budget, figure images for VISUAL |
+| generate | `query/generate.py` | prompt contract → JSON `Answer` (large role; vision role with images, text fallback when vision is unavailable) |
+| verify | `query/verify.py` | every number traceable to context or a calculation; every citation valid |
+
+Endpoints: `POST /api/ask`, `GET /api/figures/{id}`, `GET /api/pages/{n}`, `GET /api/trace/{request_id}`,
+`GET /healthz`, `GET /readyz`. Every request writes a line to `data/logs/traces.jsonl`.
+
+Evaluation: `eval/golden.jsonl` (48 questions; `eval/build_golden.py` regenerates it),
+`make eval-retrieval` (free), `make eval` (~150K Groq tokens; rows are appended as they finish,
+`--resume` continues an interrupted run, `--rescore` re-scores saved answers without model calls),
+`make embedder-gate`, `eval/write_report.py <run>` renders a report. Baseline (Phase 3, no
+expansion/rerank/compression/cache): numeric exact match 94% (POINT_LOOKUP 95%, COMPUTATION 100%),
+verifier pass 98%, recall@8 0.73 — see [docs/reports/baseline_phase3.md](docs/reports/baseline_phase3.md)
+and [docs/reports/embedder_gate.md](docs/reports/embedder_gate.md) (bge-small locked).
+
 ## Configuration
 
 | File | Contents |
@@ -92,7 +129,8 @@ Poke at the index from the serving environment:
 | `.env` | `GROQ_API_KEY`, `MODEL_PROFILE` (default `groq_build`), `APP_ENV` (`dev` / `test` / `prod`) |
 | `config/models.yaml` | Model profiles. `groq_build` is active; `anthropic` and `gemini` are validated templates for the later switch (F1). Per-model `pacing` holds the provider's RPM/TPM limits. |
 | `config/app.yaml` | Bind address (`127.0.0.1:8000`), dev-clock enablement, data paths |
-| `config/thresholds.yaml` | Retrieval, rerank, compression and cache tunables (architecture §11.1) |
+| `config/thresholds.yaml` | Retrieval (incl. the locked embedder), rerank, compression and cache tunables (architecture §11.1) |
+| `config/formulas.yaml` | Deterministic formula registry for the calculator (FR-8) |
 
 Model ids are configuration, never code. Groq's Llama 3.x and Llama 4 Scout models were retired
 from the free tier before this build started, so `groq_build` uses `openai/gpt-oss-20b`,
@@ -110,10 +148,15 @@ src/rag/
   llm.py        role-based model layer: text() · json() · vision_json(); pacing, retries, ledger
   ingest/       run.py parse.py elements.py sections.py validate.py figures.py report.py
                 sentences.py chunk_semantic.py tables.py enrich.py index.py
-  query/ compress/ cache/ calc/ api/                         (later phases)
-scripts/        smoke_llm.py inspect_index.py
+  query/        store.py analyze.py retrieve.py assemble.py generate.py verify.py
+  calc/         calculator.py
+  api/          main.py routes_ask.py
+  graph.py      LangGraph pipeline
+  compress/ cache/                                           (Phases 5–6)
+frontend/       index.html app.css app.js vendor/ (marked, DOMPurify)
+eval/           golden.jsonl build_golden.py run_eval.py embedder_gate.py results/
+scripts/        smoke_llm.py inspect_index.py ask_cli.py
 tests/          unit tests (mocked provider; no network). Ingestion tests read the PDF when present
-frontend/ eval/                                             (Phase 3+)
 ```
 
 ## The model layer in one paragraph

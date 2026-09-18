@@ -331,3 +331,16 @@ def test_ledger_lines_are_valid_json(settings, models_config, ledger, fake_clock
         "retries",
         "status",
     }
+
+
+def test_json_truncation_retries_with_double_budget(
+    settings, models_config, ledger, fake_clock
+) -> None:
+    truncated = FakeStatusError(
+        400, "Error code: 400 - {'code': 'json_validate_failed', 'failed_generation': 'max tokens'}"
+    )
+    client, chat = make_client(
+        settings, models_config, ledger, fake_clock, [truncated, '{"value": 7, "note": "ok"}']
+    )
+    assert client.json("q", Answer, max_tokens=500).value == 7
+    assert [kw.get("max_tokens") for kw in chat.bind_kwargs] == [500, 1000]

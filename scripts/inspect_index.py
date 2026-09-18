@@ -68,24 +68,13 @@ def main(argv: list[str] | None = None) -> int:
         print("   ", body)
 
     if args.dense:
-        from rag.core.embeddings import get_embedder
+        from rag.query.store import IndexStore
 
-        q = get_embedder(manifest.embedder_alias).embed_query(args.dense)
-        res = collection.query(
-            query_embeddings=[q.tolist()],
-            n_results=args.k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-        print(f"\nDENSE  {args.dense!r}")
-        for id_, doc, meta, dist in zip(
-            res["ids"][0],
-            res["documents"][0],
-            res["metadatas"][0],
-            res["distances"][0],
-            strict=True,
-        ):
-            show(id_, doc, meta, f"cos={1 - dist:.3f}")
+        store = IndexStore(args.index, figures_root=PROJECT_ROOT / "data" / "index")
+        print(f"\nDENSE  {args.dense!r}  (exact cosine, D-54)")
+        for id_, score in store.dense_search(args.dense, args.k, where=where):
+            chunk = store.get(id_)
+            show(id_, chunk.document, chunk.chroma_metadata(), f"cos={score:.3f}")
 
     if args.bm25:
         from rag.core.bm25 import BM25Index

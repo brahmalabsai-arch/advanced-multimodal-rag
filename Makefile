@@ -15,7 +15,7 @@ endif
 PY        := $(VENV_BIN)/python
 PY_INGEST := $(INGEST_BIN)/python
 
-.PHONY: setup setup-serve setup-ingest lock ingest index-base inspect serve test lint format eval bench smoke clean
+.PHONY: setup setup-serve setup-ingest lock ingest index-base inspect serve test lint format eval eval-retrieval embedder-gate ask bench smoke clean
 
 setup: setup-serve setup-ingest
 
@@ -63,9 +63,18 @@ format:
 	$(PY) -m ruff format .
 	$(PY) -m ruff check --fix .
 
-# Phase 3+: golden set, always bypass_cache=true (rule G8)
+# Golden set through the full pipeline; always bypass_cache=true (rule G8). ~150K Groq tokens.
 eval:
-	$(PY) eval/run_eval.py --bypass-cache
+	$(PY) eval/run_eval.py --name golden
+
+# Retrieval metrics only (no Groq calls) and the embedder gate
+eval-retrieval:
+	$(PY) eval/run_eval.py --retrieval-only --name retrieval
+embedder-gate:
+	$(PY) eval/embedder_gate.py --lock
+
+ask:
+	$(PY) scripts/ask_cli.py "$(Q)"
 
 # Phase 7: cache-policy benchmark (simulated, no LLM calls)
 bench:

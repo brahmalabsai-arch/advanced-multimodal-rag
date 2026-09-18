@@ -1,0 +1,107 @@
+# Deterministic formula registry (architecture §4.10, FR-8). The LLM explains; Python calculates.
+#
+# Every input names a balance-sheet / income-statement / cash-flow line item by its normalised
+# label (`line_item_norm` in row-fact metadata). Values are read from row-fact metadata only.
+# `optional` inputs default to 0 when the line item is nil ("—") for that period.
+# `kind`: ratio (x.xx), amount (USD millions), pct (percent).
+# This file's hash is part of `calculator_version` (§5.7).
+
+version: 1
+default_statement: balance_sheet
+
+formulas:
+  current_ratio:
+    description: Current assets divided by current liabilities
+    kind: ratio
+    round: 2
+    inputs:
+      current_assets: {line_item: total current assets}
+      current_liabilities: {line_item: total current liabilities}
+    expression: current_assets / current_liabilities
+    keywords: [current ratio, liquidity ratio]
+
+  quick_ratio:
+    description: (Cash + marketable securities + accounts receivable) divided by current liabilities
+    kind: ratio
+    round: 2
+    inputs:
+      cash: {line_item: cash and cash equivalents}
+      securities: {line_item: marketable securities}
+      receivables: {line_item: accounts receivable net}   # normalised label (commas stripped)
+      current_liabilities: {line_item: total current liabilities}
+    expression: (cash + securities + receivables) / current_liabilities
+    keywords: [quick ratio, acid test, acid-test]
+
+  working_capital:
+    description: Current assets minus current liabilities
+    kind: amount
+    round: 0
+    inputs:
+      current_assets: {line_item: total current assets}
+      current_liabilities: {line_item: total current liabilities}
+    expression: current_assets - current_liabilities
+    keywords: [working capital, net working capital]
+
+  debt_to_equity:
+    description: Total debt (short-term + long-term) divided by total shareholders' equity
+    kind: ratio
+    round: 3
+    inputs:
+      short_term_debt: {line_item: short term debt, optional: true}
+      long_term_debt: {line_item: long term debt}
+      equity: {line_item: total shareholders' equity}
+    expression: (short_term_debt + long_term_debt) / equity
+    keywords: [debt to equity, debt-to-equity, debt/equity, leverage ratio, total debt to equity]
+
+  liabilities_to_equity:
+    description: Total liabilities divided by total shareholders' equity
+    kind: ratio
+    round: 3
+    inputs:
+      liabilities: {line_item: total liabilities}
+      equity: {line_item: total shareholders' equity}
+    expression: liabilities / equity
+    keywords: [liabilities to equity, liabilities-to-equity]
+
+  equity_ratio:
+    description: Total shareholders' equity divided by total assets
+    kind: ratio
+    round: 3
+    inputs:
+      equity: {line_item: total shareholders' equity}
+      assets: {line_item: total assets}
+    expression: equity / assets
+    keywords: [equity ratio, equity to assets]
+
+  cash_and_investments:
+    description: Cash and cash equivalents plus marketable securities
+    kind: amount
+    round: 0
+    inputs:
+      cash: {line_item: cash and cash equivalents}
+      securities: {line_item: marketable securities}
+    expression: cash + securities
+    keywords: [cash and investments, cash and marketable securities, cash pile, total cash, liquidity position]
+
+  # Generic year-over-year formulas: `metric` is bound at query time to a line item.
+  yoy_change_pct:
+    description: Percentage change from the prior fiscal year to the current fiscal year
+    kind: pct
+    round: 1
+    generic: true
+    inputs:
+      current: {line_item: "{metric}", period: current}
+      prior: {line_item: "{metric}", period: prior}
+    expression: (current - prior) / abs(prior) * 100
+    keywords: [year-over-year, year over year, yoy, percent change, percentage change, grow, growth, increase, decrease, change in]
+
+  yoy_change_abs:
+    description: Absolute change from the prior fiscal year to the current fiscal year
+    kind: amount
+    round: 0
+    generic: true
+    inputs:
+      current: {line_item: "{metric}", period: current}
+      prior: {line_item: "{metric}", period: prior}
+    expression: current - prior
+    keywords: [absolute change, dollar change, how much did, by how much]

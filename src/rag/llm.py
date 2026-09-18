@@ -299,8 +299,23 @@ class LLMClient:
         role: Role,
         **call_kwargs: Any,
     ) -> T:
-        """JSON mode → validate; on failure retry once with the error appended; then raise."""
-        response = self._invoke(messages, role, json_mode=True, **call_kwargs)
+        """JSON mode → validate; on failure retry once with the error appended; then raise.
+
+        Groq answers 400 `json_validate_failed` when hidden reasoning exhausts `max_tokens`
+        before the JSON closes; that is retried once with double the output budget.
+        """
+        try:
+            response = self._invoke(messages, role, json_mode=True, **call_kwargs)
+        except LLMCallError as exc:
+            if "json_validate_failed" not in str(exc) or not call_kwargs.get("max_tokens"):
+                raise
+            call_kwargs = {**call_kwargs, "max_tokens": call_kwargs["max_tokens"] * 2}
+            log.warning(
+                "JSON truncated before completion (role=%s); retrying with max_tokens=%d",
+                role,
+                call_kwargs["max_tokens"],
+            )
+            response = self._invoke(messages, role, json_mode=True, **call_kwargs)
         parsed, error = self._parse(response.text, schema)
         if parsed is not None:
             return parsed

@@ -1,6 +1,7 @@
 # Tunables (architecture §11.1). This file's hash is part of `retrieval_config_hash` (§5.7),
 # so any edit here invalidates the semantic cache by design.
 retrieval:
+  embedder: bge-small              # locked at the Phase 3 embedder gate (D-47); index dir follows
   dense_top_k: 30
   sparse_top_k: 30
   rrf_k: 60

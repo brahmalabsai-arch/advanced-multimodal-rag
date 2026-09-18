@@ -33,3 +33,6 @@ Thumbs.db
 
 # The corpus PDF belongs in data/raw/ (Phase 1). Keep large binaries out of git.
 docs/*.pdf
+
+# Evaluation run outputs (reports are committed under docs/reports)
+eval/results/

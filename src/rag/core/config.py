@@ -192,6 +192,7 @@ class AppConfig(BaseModel):
 class RetrievalThresholds(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    embedder: str = "bge-small"
     dense_top_k: int = Field(gt=0)
     sparse_top_k: int = Field(gt=0)
     rrf_k: int = Field(gt=0)
@@ -287,6 +288,38 @@ class ThresholdsConfig(BaseModel):
     cache: CacheThresholds
 
 
+# ------------------------------------------------------------------------ formulas.yaml
+
+
+class FormulaInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    line_item: str
+    optional: bool = False
+    period: Literal["current", "prior"] = "current"
+
+
+class Formula(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str
+    kind: Literal["ratio", "amount", "pct"]
+    round: int = Field(ge=0, le=6)
+    inputs: dict[str, FormulaInput]
+    expression: str
+    keywords: list[str] = Field(default_factory=list)
+    generic: bool = False
+    statement: str | None = None
+
+
+class FormulasConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    default_statement: str = "balance_sheet"
+    formulas: dict[str, Formula]
+
+
 # ------------------------------------------------------------------------------ loaders
 
 
@@ -323,4 +356,12 @@ def load_thresholds_config(
 ) -> ThresholdsConfig:
     return ThresholdsConfig.model_validate(
         load_yaml(_config_path("thresholds.yaml", path, settings), _env_from_settings(settings))
+    )
+
+
+def load_formulas_config(
+    path: Path | None = None, settings: Settings | None = None
+) -> FormulasConfig:
+    return FormulasConfig.model_validate(
+        load_yaml(_config_path("formulas.yaml", path, settings), _env_from_settings(settings))
     )
