@@ -312,36 +312,36 @@ About 1–2 calls per question; a full golden run of 40 questions ≈ 40–80 ca
 ### Tasks
 
 **Domain configuration**
-- [ ] `config/fiscal_calendar.yaml`: FY2026 ends 2026-01-25, FY2025 ends 2025-01-26 (extendable).
-- [ ] `config/glossary.yaml`: roughly 150 synonym → canonical metric/formula mappings, with schema validation.
+- [x] `config/fiscal_calendar.yaml`: FY2026 ends 2026-01-25, FY2025 ends 2025-01-26 (extendable).
+- [x] `config/glossary.yaml`: roughly 150 synonym → canonical metric/formula mappings, with schema validation.
 
 **Slots and scope**
-- [ ] `query/slots.py` — rule-based, no LLM:
+- [x] `query/slots.py` — rule-based, no LLM:
   - `entity` and `fiscal_periods` (including `AMBIGUOUS_2025` handling).
   - `metrics` and `statement`.
   - `direction`, `aggregation`, `time_anchor`.
   - Query normalization for the L1 key.
-- [ ] `query/scope.py`: rule-based `OUT_OF_SCOPE` detection (buy/sell/hold, price targets, live-market questions), with the `small` role as fallback on borderline scores; scoped refusal response without retrieval.
+- [x] `query/scope.py`: rule-based `OUT_OF_SCOPE` detection (buy/sell/hold, price targets, live-market questions), with the `small` role as fallback on borderline scores; scoped refusal response without retrieval.
 
 **Analysis and expansion**
-- [ ] `query/analyze.py`: rule-based intent first; one `small` JSON call returning intent, sub-questions, paraphrases, section hints, and `needs_image` when rules are not confident.
-- [ ] Expansion per the intent matrix in §4.4:
+- [x] `query/analyze.py`: rule-based intent first; one `small` JSON call returning intent, sub-questions, paraphrases, section hints, and `needs_image` when rules are not confident.
+- [x] Expansion per the intent matrix in §4.4:
   - Glossary expansion.
   - Decomposition for computations.
   - At most 2 paraphrases.
-  - Numbers-free HyDE for `EXPLANATORY` only.
+  - Numbers-free HyDE for `EXPLANATORY` only. **Null result** (EXPLANATORY recall already 1.00) → `expansion.hyde: false` by default, D-23.
   - At most 4 retrieval queries.
-- [ ] Retrieval upgrades: metadata pre-filters from slots with an unfiltered retry when fewer than 3 results come back; calculator now selects formulas from slots.
+- [x] Retrieval upgrades: metadata pre-filters from slots with an unfiltered retry when fewer than 3 results come back; calculator now selects formulas from slots.
 
 **Reranking**
-- [ ] `query/rerank.py`: fastembed `bge-reranker-base` over the top 30 using the original query; gate conditions S1–S3; drop floor with `min_keep` 3.
+- [x] `query/rerank.py`: fastembed `bge-reranker-base` over the top 30 using the original query; gate conditions S1–S3; drop floor with `min_keep` 3. **Measured negative** (recall@8 0.95 → 0.91, ≈ 5 s per question) → `rerank.enabled: false` by default, D-24.
 
 **Wiring**
-- [ ] Graph: add `normalize_and_extract_slots → scope_gate → analyze_and_expand → retrieve → rerank_gate/rerank → …`.
-- [ ] Debug panel v2: slots, intent (rule vs LLM), expansions, filters applied, rerank decision with skip reason, rerank scores.
+- [x] Graph: add `normalize_and_extract_slots → scope_gate → analyze_and_expand → retrieve → rerank_gate/rerank → …`.
+- [x] Debug panel v2: slots, intent (rule vs LLM), expansions, filters applied, rerank decision with skip reason, rerank scores.
 
 **Evidence**
-- [ ] `eval/retrieval_ablation.py`: dense → +BM25 → +expansion → +rerank, reporting recall@8, MRR, exact match, and Groq calls per query → `docs/reports/retrieval_ablation.md`.
+- [x] `eval/retrieval_ablation.py`: dense → +BM25 → +expansion → +rerank, reporting recall@8, MRR, exact match, and Groq calls per query → `docs/reports/retrieval_ablation.md`.
 
 ### Tests
 - ≥ 50 slot cases, including:
@@ -357,10 +357,13 @@ About 1–2 calls per question; a full golden run of 40 questions ≈ 40–80 ca
 Rule-confident queries add 0 calls; others add 1 `small` call.
 
 ### Exit criteria
-- [ ] Ablation report committed; any component with no measured benefit is marked as such in D-22/D-23/D-24.
-- [ ] No regression on G1–G10.
-- [ ] `OUT_OF_SCOPE` handled without retrieval.
-- [ ] Debug panel shows slots and gate decisions for every query.
+- [x] Ablation report committed (`docs/reports/retrieval_ablation.md`); HyDE (D-23) and the reranker (D-24) marked as null / negative results and disabled by default.
+- [ ] No regression on G1–G10 — full golden re-run pending the daily Groq window on `gpt-oss-120b` (retrieval-only: recall@8 0.73 → 0.95 on the same 46 questions, P4/P13/C5/C8/G7/G8/G10/T5/T7 fixed).
+- [x] `OUT_OF_SCOPE` handled without retrieval (G14, O2 and paraphrases; test `test_out_of_scope_is_refused_without_retrieval_or_model_calls`).
+- [x] Debug panel shows slots, scope decision, expansion queries with filters, and the rerank gate decision for every query.
+
+### Outcome (2026-09-18)
+Retrieval-only on the 46 in-scope golden questions: dense 0.52 → +BM25 0.73 → +expansion 0.95 recall@8 (MRR 0.46 → 0.91, hit rate 1.00) with **zero model calls** for every golden question (all rule-confident). Groq usage for the phase: ≈ 20 `small` calls (ablation `+llm` arm and probes), no `large` calls.
 
 ---
 

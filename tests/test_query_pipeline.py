@@ -344,3 +344,105 @@ def test_ask_contract_with_loaded_pipeline_and_fake_llm(monkeypatch: pytest.Monk
         assert body["cache_tier"] == "bypassed"
         t = c.get(f"/api/trace/{body['request_id']}")
         assert t.status_code == 200 and t.json()["intent"] == "POINT_LOOKUP"
+
+
+@pytest.mark.skipif(
+    not (PROJECT_ROOT / "data" / "index" / "manifest.json").exists(),
+    reason="run `make ingest` first",
+)
+def test_out_of_scope_is_refused_without_retrieval_or_model_calls() -> None:
+    """Plan Phase 4 exit criterion: G14 and paraphrases refused with zero retrieval calls."""
+    from rag.core.settings import Settings
+    from rag.graph import Pipeline
+    from rag.llm import LLMClient
+
+    class NeverCalled:
+        def bind(self, **kw):
+            return self
+
+        def invoke(self, messages):
+            raise AssertionError("model must not be called for an out-of-scope question")
+
+    settings = Settings(
+        _env_file=None,
+        groq_api_key="gsk_test_key_0123456789",
+        app_env="test",
+        data_dir=PROJECT_ROOT / "data",
+    )
+    llm = LLMClient(settings, chat_factory=lambda cfg, role: NeverCalled(), pacing_enabled=False)
+    pipeline = Pipeline(settings=settings, client=llm)
+    for q in ("Should I buy NVIDIA stock?", "Is NVDA a good buy right now?"):
+        r = pipeline.ask(q, bypass_cache=True)
+        assert r.intent == "OUT_OF_SCOPE" and not r.scope.in_scope
+        assert r.retrieval.candidates == [] and r.context.blocks == []
+        assert r.tokens_by_model == {} and r.generator_role == "-"
+        assert "annual report" in r.answer.answer_markdown
+        assert "retrieve" not in r.latency_ms_by_node and "generate" not in r.latency_ms_by_node
+    # a balance-sheet question is never refused
+    r = pipeline._degraded(
+        {"question": "What were total assets as of Jan 25, 2026?", "request_id": "x"}, "n/a"
+    )
+    assert r["scope"].in_scope and r["slots"].metrics == ["total assets"]
+
+
+@pytest.mark.skipif(
+    not (PROJECT_ROOT / "data" / "index" / "manifest.json").exists(),
+    reason="run `make ingest` first",
+)
+def test_debug_payload_exposes_slots_expansion_and_gate_decisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+    from langchain_core.messages import AIMessage
+
+    from rag.api import main as api_main
+    from rag.core.settings import Settings
+    from rag.graph import Pipeline
+    from rag.llm import LLMClient
+
+    class FakeChat:
+        def bind(self, **kw):
+            return self
+
+        def invoke(self, messages):
+            return AIMessage(
+                content='{"answer_markdown": "The current ratio is **3.91** [K1] (fiscal 2026, as of January 25, 2026).", '
+                '"figures_used": [], "citations": ["K1"], "confidence": "high", "answer_class": "analytical"}',
+                usage_metadata={"input_tokens": 100, "output_tokens": 30, "total_tokens": 130},
+            )
+
+    settings = Settings(
+        _env_file=None,
+        groq_api_key="gsk_test_key_0123456789",
+        app_env="test",
+        data_dir=PROJECT_ROOT / "data",
+    )
+    llm = LLMClient(settings, chat_factory=lambda cfg, role: FakeChat(), pacing_enabled=False)
+    monkeypatch.setattr(
+        api_main,
+        "_load_pipeline",
+        lambda app: setattr(app.state, "pipeline", Pipeline(settings=settings, client=llm)),
+    )
+    with TestClient(api_main.app) as c:
+        r = c.post(
+            "/api/ask",
+            json={
+                "question": "What is the current ratio as of Jan 25, 2026?",
+                "bypass_cache": True,
+            },
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()["debug"]
+        assert d["slots"]["formulas"] == ["current_ratio"]
+        assert d["slots"]["fiscal_periods"] == ["FY2026"]
+        assert d["scope"]["in_scope"] is True
+        assert d["analysis"]["intent"] == "COMPUTATION" and d["analysis"]["llm_called"] is False
+        kinds = [q["kind"] for q in d["analysis"]["queries"]]
+        assert kinds[0] == "original" and "decomposition" in kinds
+        assert d["analysis"]["queries"][1]["where"]["$and"][0] == {"statement": "balance_sheet"}
+        assert d["rerank"]["gate"] in {"S1", "S2", "S3", "disabled"} or d["rerank"]["applied"]
+        assert d["calculations"][0]["formula"] == "current_ratio"
+        assert d["calculations"][0]["rounded"] == 3.91
+        assert d["tokens_by_model"] and sum(t["calls"] for t in d["tokens_by_model"].values()) == 1
+        t = c.get(f"/api/trace/{r.json()['request_id']}").json()
+        assert t["slots"]["formulas"] == ["current_ratio"] and "rerank_applied" in t

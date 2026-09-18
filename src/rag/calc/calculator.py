@@ -5,7 +5,10 @@ live in `config/formulas.yaml`; expressions are evaluated by a tiny whitelisted 
 (no `eval`). A missing line item produces a `missing_inputs` result that names it — the model
 is told to say so, never to estimate.
 
-Phase 3 selects formulas by keyword (`select_formulas`); Phase 4 selects them from slots.
+Phase 3 selected formulas by keyword (`select_formulas`, kept as the fallback); Phase 4
+selects them from slots (`select_formulas_from_slots`): a recognised formula id applies to the
+latest fiscal period in the question, and a metric plus a year-over-year / change / growth cue
+(or two periods) applies the generic YoY formulas.
 """
 
 from __future__ import annotations
@@ -15,12 +18,15 @@ import operator
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
 from rag.core.config import Formula, FormulasConfig, load_formulas_config
 from rag.core.schema import Chunk
+
+if TYPE_CHECKING:
+    from rag.query.slots import QuerySlots
 
 # ------------------------------------------------------------- expression evaluator
 
@@ -309,6 +315,41 @@ def select_formulas(
         return requests
     if any(k in q for k in YOY_KEYWORDS):
         metric = match_line_item(question, line_items)
+        if metric:
+            return [
+                FormulaRequest("yoy_change_pct", fy, metric),
+                FormulaRequest("yoy_change_abs", fy, metric),
+            ]
+    return []
+
+
+# --------------------------------------------------------------------- slot selection
+
+YOY_AGGREGATIONS = {"yoy", "change", "growth", "pct"}
+
+
+def select_formulas_from_slots(
+    slots: QuerySlots,
+    line_items: list[str],
+    config: FormulasConfig | None = None,
+    *,
+    default_fiscal_year: int = DEFAULT_FISCAL_YEAR,
+) -> list[FormulaRequest]:
+    """Phase 4 selection (architecture §4.10). Named formulas from the glossary win; otherwise a
+    metric with a comparison cue (or two periods) gets the generic YoY pair. The current period
+    is the latest fiscal year in the question."""
+    cfg = config or load_formulas_config()
+    fy = slots.current_fiscal_year or default_fiscal_year
+    requests = [
+        FormulaRequest(f, fy)
+        for f in slots.formulas
+        if f in cfg.formulas and not cfg.formulas[f].generic
+    ]
+    if requests:
+        return requests
+    comparison = bool(set(slots.aggregation) & YOY_AGGREGATIONS) or slots.direction is not None
+    if slots.metrics and (comparison or len(slots.resolved_fiscal_years) >= 2):
+        metric = next((m for m in slots.metrics if m in line_items), None)
         if metric:
             return [
                 FormulaRequest("yoy_change_pct", fy, metric),

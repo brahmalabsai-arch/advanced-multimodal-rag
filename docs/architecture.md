@@ -273,9 +273,13 @@ Output is a `QuerySlots` Pydantic object used by the cache guard, retrieval filt
 
 Normalization for the L1 key: lower-case, Unicode normalize, collapse whitespace, strip punctuation except `$ % .`, canonicalize period and metric synonyms. `L1_key = sha256(normalized_text + version_keys)`.
 
+**As built (Phase 4, `query/slots.py`, D-56).** Extraction is longest-phrase-first over the normalised question with every matched span *consumed*, so "current ratio" never leaks a `current` time anchor and "fiscal 2026" never leaves a bare "2026" behind. Order: fiscal periods (relative phrases from `config/fiscal_calendar.yaml`, `FY26` / `fiscal 2026` / date forms mapped through the calendar, bare years → `AMBIGUOUS_<year>` resolved one fiscal year forward with a `period_note` the generator repeats) → glossary (`config/glossary.yaml`: statements, formulas, metrics) → entity aliases → lexicons (direction, aggregation, time anchor). `metrics` (row-fact `line_item_norm` keys) and `formulas` (formula ids) are separate slots; `statement` is explicit when named, otherwise inferred when every metric / formula agrees. `canonical_text` (matched spans replaced by canonical tokens) is the L1-key input; `slot_rich` = metric or formula plus a period.
+
 ### 4.3 Node: scope gate
 
 Rule-first detection of `OUT_OF_SCOPE` (buy/sell/hold, price targets, "right now" market data). Cheap small-LLM fallback only when the rule score is borderline. Refusals are cached only in L1 (short TTL) because refusal wording may evolve.
+
+**As built (Phase 4, `query/scope.py`).** Hard patterns (advice verbs, buy/sell/hold, price targets, live price, share-price forecasts, advice nouns) score 1.0; borderline patterns (market terms, future-looking words, other companies' financials) score 0.5; in-scope anchors (filing vocabulary, statements, fiscal periods, slots) subtract 0.4 — except that slots never rescue an *other company* question. Score ≥ 0.8 refuses by rule; 0.4–0.8 makes one `small` JSON call (`in_scope`, `category`, `reason`); a failed fallback defaults to in scope. A refusal short-circuits the graph: empty retrieval and context, a category-specific scoped answer, `verify.passed = true`, zero model calls.
 
 ### 4.4 Node: `analyze_and_expand` [B5]
 
@@ -309,6 +313,8 @@ Rule-first detection of `OUT_OF_SCOPE` (buy/sell/hold, price targets, "right now
 - **Numbers-free HyDE:** the hypothetical passage is generated with the instruction "describe what the relevant disclosure would discuss; do not state any figures". A hallucinated number inside a HyDE document would pull retrieval toward chunks containing that wrong number.
 - **Cap:** at most 4 retrieval queries per user query, keeping retrieval latency and reranker load bounded.
 
+**As built (Phase 4, `query/analyze.py`, D-57).** Rule intent carries a confidence: cue-word rules (VISUAL, CROSS_SECTION, EXPLANATORY) and slot rules (formula → COMPUTATION; metric + comparison cue or two periods → COMPARISON_TREND; metric → POINT_LOOKUP) score ≥ 0.85; a question with neither cues nor slots scores 0.5 and triggers the single `small` analysis call, whose intent then wins. EXPLANATORY also makes that one call when HyDE is enabled, because the passage has to be generated; the call returns intent, sub-questions, paraphrases, section hints, `needs_image` and `hyde_passage` together. Glossary and decomposition queries are phrased like row-fact documents (`NVIDIA Consolidated Balance Sheets — total assets: as of Jan 25, 2026 (FY2026)`) and carry a `statement` + `modality ∈ {row_fact, table}` filter; **they are built for numeric intents only** — the ablation showed row-fact queries pushing the narrative an EXPLANATORY question needs out of the top 8 (E3/E4 recall 1.0 → 0.0). Query priority under the cap: original → glossary / decomposition → HyDE → section / sub-question → paraphrases; a formula with more inputs than the cap allows groups its inputs into one query each. Every `expansion.*` switch lives in `config/thresholds.yaml` so the ablation can turn components off one at a time.
+
 ### 4.5 Node: `hybrid_retrieve` [B5]
 
 For each retrieval query:
@@ -317,6 +323,8 @@ For each retrieval query:
 3. **Sparse:** BM25, top 30.
 4. **Fuse:** Reciprocal Rank Fusion, `score = Σ 1/(k + rank)`, `k = 60`, across all retrieval queries and both retrievers. RRF uses ranks only, so BM25's unbounded scores and cosine similarities need no normalization [R-4].
 5. **Small-to-big:** row-fact hits pull their parent table id into the candidate set when intent ∈ {COMPARISON_TREND, EXPLANATORY}; figure hits pull their `companion_table_id`.
+
+**As built (Phase 4, `query/retrieve.py`).** Each retrieval query carries its own `where`; the original question always runs unfiltered and the filtered retry (fewer than 3 ids) is per query. The fused list keeps the top `rerank.candidates` (30) as `pool` for the reranker and the top `final_k` (8) plus small-to-big expansions as `candidates`; every candidate records which query kinds hit it (`hit_by`) for the debug panel.
 
 ### 4.6 Node: rerank gate and reranker [B5]
 
@@ -330,6 +338,8 @@ The reranker is a local ONNX cross-encoder, `BAAI/bge-reranker-base` via fastemb
 **Otherwise:** rerank the top 30 fused candidates with (original user query, chunk) pairs → keep top 8, with a floor: drop candidates whose rerank logit is below a calibrated threshold, but always keep ≥ 3.
 
 Reranking always uses the *original* query (not paraphrases) so expansion improves recall without diluting precision.
+
+**As built (Phase 4, `query/rerank.py`).** S1's "required metrics" are the formula inputs for a COMPUTATION and the question's metrics otherwise. The reranker is a lazy fastembed `TextCrossEncoder`; `apply_rerank` is pure (scores in, re-ordered `RetrievalResult` out) so the gate and the drop floor are unit-tested with synthetic logits. **Measured on the 46 in-scope golden questions (D-24):** gated reranking lowered recall@8 from 0.95 to 0.91 and MRR from 0.91 to 0.86 (S1 skipped 30 questions, S3 4; the 15 reranked questions lost G7, E3, V3 and X1 chunks), ungated 0.86, MiniLM-L-6 0.88 at 1.2 s vs 5.1 s per question. Score calibration: gold chunks median logit 4.4 (p10 0.0, min −3.6), others median 0.3; `drop_floor_logit −2.0` cuts 3 of 66 gold and 389 of 1,314 other candidates. The reranker is therefore **disabled by default** (`rerank.enabled: false`), and the debug panel reports the gate decision either way.
 
 ### 4.7 Node: compression classifier → see §6 [B2]
 
@@ -1343,9 +1353,9 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 | D-19 | Figures via vision-model description + image passthrough | CLIP; ColPali | Accepted | [B6-Q6] §3.7 |
 | D-20 | Single `report_chunks` collection with modality metadata | Collection per modality | Proposed | [B3] §8.2 |
 | D-21 | BM25 via rank-bm25 outside Chroma | Chroma Cloud sparse | Proposed | [R-3] |
-| D-22 | Rule-first intent; one combined small-LLM analysis call | Separate calls | Proposed | [B5] §4.4 |
-| D-23 | Numbers-free HyDE, EXPLANATORY only | HyDE everywhere | Proposed | [B5] §4.4 |
-| D-24 | Rerank gate; rerank on original query; top 30 on localhost | Always rerank | Revised | [B5] §4.6, [B7-Q3] |
+| D-22 | Rule-first intent; one combined small-LLM analysis call. **Measured (Phase 4):** rules classify 46/48 golden questions as labelled with 0 calls; the combined call fires only when rule confidence < 0.8 (0 of 48 golden questions) — kept as the fallback for cue-free questions | Separate calls | Accepted (Phase 4) | [B5] §4.4, `docs/reports/retrieval_ablation.md` |
+| D-23 | Numbers-free HyDE, EXPLANATORY only. **Measured (Phase 4): no benefit** — EXPLANATORY recall@8 is already 1.00 after hybrid retrieval, the `+llm` arm adds nothing at ~1.8 `small` calls per question; **off by default** (`expansion.hyde: false`), code and digit-rejection test kept | HyDE everywhere | Revised (Phase 4, null result) | [B5] §4.4, `docs/reports/retrieval_ablation.md` |
+| D-24 | Rerank gate; rerank on original query; top 30 on localhost. **Measured (Phase 4): negative** — `bge-reranker-base` lowers recall@8 from 0.95 to 0.91 with the S1–S3 gate (0.86 ungated; MiniLM-L-6 0.88) and costs ≈ 5 s per reranked question on this CPU; the row-fact glossary expansion already solves what a reranker would. **Off by default** (`rerank.enabled: false`); gate, reranker and the ablation arm stay so a larger corpus can re-test | Always rerank | Revised (Phase 4, negative result) | [B5] §4.6, [B7-Q3], `docs/reports/retrieval_ablation.md` |
 | D-25 | ~~bge-base + bge-reranker-base via sentence-transformers~~ | — | Superseded by D-34 | [B3] |
 | D-26 | Deterministic calculator from metadata | LLM computes | Accepted | [B6-Q3] |
 | D-27 | Swappable `MODEL_PROFILE` | Hard-coded provider | Accepted | [B6-Q2], [B7-Q2] |
@@ -1376,6 +1386,8 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 | D-53 | Chunk boundary detection always uses `bge-small` sentence embeddings (one `chunks.jsonl`); each index re-embeds the same chunks with its own embedder. Keeps the Phase 3 embedder gate a retrieval-only comparison | Re-chunk per embedder | Accepted (Phase 2) | §3.3, `ingest/run.py` |
 | D-54 | **Dense search is exact cosine over in-memory vectors** loaded from Chroma at startup; Chroma remains the persistent store (and the Phase 6 `semantic_cache`). Measured in Phase 3: Chroma's HNSW query dropped the true top hit (`rowfact_p141_goodwill`) in one process and not another on the 689-chunk index; brute force is ≈1 ms and deterministic (NFR-9) | Tune HNSW `ef_search` and accept approximate results | Accepted (Phase 3) | `query/store.py` |
 | D-55 | Vision-unavailable fallback: a VISUAL question whose vision call fails (quota, preview withdrawn) is answered by the `large` text model from the figure description + companion table, with the figure still shown in the UI | Fail the request | Accepted (Phase 3) | §13, `query/generate.py` |
+| D-56 | Slot extraction is longest-phrase-first with consumed spans over a normalised question; `metrics` (row-fact keys) and `formulas` (formula ids) are separate slots; bare years become `AMBIGUOUS_<year>` resolved one fiscal year forward with a note the generator repeats. Glossary (`config/glossary.yaml`, 325 synonyms) and fiscal calendar (`config/fiscal_calendar.yaml`) are validated Pydantic configs | LLM slot extraction; single metric slot | Accepted (Phase 4) | §4.2, `query/slots.py` |
+| D-57 | Glossary / decomposition expansion queries are phrased like row-fact documents and carry a `statement` + `modality` pre-filter, **for numeric intents only**; the original question always runs unfiltered. Measured: recall@8 0.73 → 0.95, MRR 0.46 → 0.91, zero model calls; the filter itself adds +0.02 recall / +0.05 MRR over unfiltered expansion. Row-fact queries on EXPLANATORY questions pushed narrative out of the top 8 (E3/E4 → 0.0), hence the intent restriction | Expansion for every intent; filters on every query | Accepted (Phase 4) | §4.4–4.5, `query/analyze.py`, `docs/reports/retrieval_ablation.md` |
 | D-51 | Build machine runs Python 3.13 (3.11 not installed); `requires-python >= 3.11` kept so either works. Docling/spaCy/onnxruntime wheel availability on 3.13 verified when `.venv-ingest` is created | Install 3.11 separately | Proposed (Phase 0) | §8 |
 
 ---

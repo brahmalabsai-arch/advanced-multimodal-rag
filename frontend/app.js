@@ -73,14 +73,47 @@
       citesEl.appendChild(chip);
     }
 
-    // debug panel
-    const inCtx = new Set(resp.debug.context_blocks.map((b) => b.chunk_id));
+    // debug panel v2 — query understanding (Phase 4)
+    const d = resp.debug, sl = d.slots;
+    const slotsEl = $("slots"); slotsEl.innerHTML = "";
+    const slotRows = [
+      ["entity", sl.entity], ["periods", sl.fiscal_periods.join(", ")], ["metrics", sl.metrics.join(", ")],
+      ["formulas", sl.formulas.join(", ")], ["statement", sl.statement ? `${sl.statement} (${sl.statement_source})` : ""],
+      ["direction", sl.direction], ["aggregation", sl.aggregation.join(", ")], ["time anchor", sl.time_anchor ? "yes" : ""],
+    ];
+    for (const [k, v] of slotRows) {
+      const span = document.createElement("span"); span.className = "slot" + (v ? "" : " empty");
+      span.innerHTML = `<b>${k}</b> ${DOMPurify.sanitize(v || "–")}`; slotsEl.appendChild(span);
+    }
+    if (sl.period_note) { const n = document.createElement("span"); n.className = "slot"; n.textContent = sl.period_note; slotsEl.appendChild(n); }
+    const sc = d.scope;
+    $("scope").textContent = `${sc.in_scope ? "IN SCOPE" : "OUT OF SCOPE"} · score ${sc.score} · rule ${sc.rule || "none"} · decided by ${sc.source}${sc.llm_called ? " (small model called)" : ""}\n${sc.reason}`;
+    const an = d.analysis;
+    $("analysis").textContent = `intent ${an.intent} · confidence ${an.confidence.toFixed(2)} · decided by ${an.source} · rule "${an.rule}"` +
+      (an.llm_called ? `\nsmall model called: intent ${an.llm_intent || "?"} · paraphrases ${an.paraphrases.length} · sub-questions ${an.sub_questions.length} · section hints ${an.section_hints.join(", ") || "none"}` : "\nno model call (rule-confident)") +
+      (an.hyde_passage ? `\nHyDE: ${an.hyde_passage}` : (an.hyde_rejected ? "\nHyDE rejected (contained digits) and dropped" : "")) +
+      (an.notes.length ? `\nnotes: ${an.notes.join(" | ")}` : "");
+    const qb = $("queries-table").querySelector("tbody"); qb.innerHTML = "";
+    const retried = d.retrieval.filtered_retries || [];
+    an.queries.forEach((q, i) => {
+      const tr = document.createElement("tr");
+      const f = q.where ? JSON.stringify(q.where).replace(/"/g, "") + (retried.includes(i) ? " → < 3 results, retried unfiltered" : "") : "–";
+      tr.innerHTML = `<td>${q.kind}</td><td class="wrap">${DOMPurify.sanitize(q.text)}</td><td class="wrap">${DOMPurify.sanitize(f)}</td>`;
+      qb.appendChild(tr);
+    });
+    const rr = d.rerank;
+    $("rerank").textContent = rr.applied
+      ? `RERANKED with ${rr.model} · kept ${rr.kept} · dropped ${rr.dropped.length ? rr.dropped.join(", ") : "none"} · ${rr.latency_ms} ms`
+      : `SKIPPED · gate ${rr.gate || "-"}\n${rr.skip_reason || ""}` + (rr.required_metrics.length ? `\nrequired metrics: ${rr.required_metrics.join(", ")}` : "");
+
+    const inCtx = new Set(d.context_blocks.map((b) => b.chunk_id));
     const tbody = $("retrieval-table").querySelector("tbody"); tbody.innerHTML = "";
-    resp.debug.candidates.forEach((c, i) => {
+    d.candidates.forEach((c, i) => {
       const tr = document.createElement("tr"); if (c.source === "expanded") tr.className = "expanded";
       const dense = c.dense_rank ? `#${c.dense_rank} (${c.dense_score})` : "–";
       const bm25 = c.bm25_rank ? `#${c.bm25_rank} (${c.bm25_score})` : "–";
-      tr.innerHTML = `<td>${i + 1}</td><td>${c.chunk_id}</td><td>${c.modality}</td><td>${c.page}</td><td>${dense}</td><td>${bm25}</td><td>${c.rrf.toFixed(4)}</td><td>${inCtx.has(c.chunk_id) ? "✓" : ""}</td>`;
+      const rers = c.rerank_score != null ? `#${c.rerank_rank} (${c.rerank_score.toFixed(2)})` : "–";
+      tr.innerHTML = `<td>${i + 1}</td><td>${c.chunk_id}</td><td>${c.modality}</td><td>${c.page}</td><td>${dense}</td><td>${bm25}</td><td>${c.rrf.toFixed(4)}</td><td>${rers}</td><td>${(c.hit_by || []).join(",") || "–"}</td><td>${inCtx.has(c.chunk_id) ? "✓" : ""}</td>`;
       tbody.appendChild(tr);
     });
     $("calc").textContent = resp.debug.calculations.length
@@ -88,7 +121,7 @@
       : "(no calculation for this intent)";
     const v = resp.debug.verify;
     $("verify").textContent = `passed: ${v.passed}\nnumbers checked: ${v.numbers_checked}\nunmatched: ${v.unmatched_numbers.join(", ") || "none"}\ninvalid citations: ${v.invalid_citations.join(", ") || "none"}\nissues: ${v.issues.join(" | ") || "none"}`;
-    const tokens = Object.entries(resp.debug.tokens_by_model).map(([m, t]) => `${m}: in ${t.in} · out ${t.out} · calls ${t.calls}`).join("\n") || "no model calls";
+    const tokens = Object.entries(resp.debug.tokens_by_model).map(([m, t]) => `${m}: in ${t.in} · out ${t.out} · calls ${t.calls}${t.pacing_wait_ms ? ` · pacing wait ${t.pacing_wait_ms} ms` : ""}`).join("\n") || "no model calls";
     const lat = Object.entries(resp.debug.latency_ms_by_node).map(([n, ms]) => `${n} ${ms} ms`).join(" · ");
     $("tokens").textContent = `${tokens}\n${lat}\ntotal ${resp.debug.total_latency_ms} ms · context ${resp.debug.context_tokens}/${resp.debug.context_budget} tokens · dropped ${resp.debug.dropped.length}`;
     $("ctx-tokens").textContent = resp.debug.context_tokens;

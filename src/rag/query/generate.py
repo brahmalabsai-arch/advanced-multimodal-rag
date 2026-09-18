@@ -54,9 +54,14 @@ class Answer(BaseModel):
 
 
 def build_user_prompt(
-    question: str, context: AssembledContext, retry_note: str | None = None
+    question: str,
+    context: AssembledContext,
+    retry_note: str | None = None,
+    notes: list[str] | None = None,
 ) -> str:
     parts = [f"QUESTION: {question}", "", "CONTEXT BLOCKS:", context.text]
+    if notes:
+        parts += ["", "NOTES FROM QUERY ANALYSIS:"] + [f"- {n}" for n in notes]
     if context.images:
         parts += [
             "",
@@ -78,11 +83,13 @@ def generate_answer(
     intent: str,
     request_id: str,
     retry_note: str | None = None,
+    notes: list[str] | None = None,
     max_tokens: int = 1200,
 ) -> tuple[Answer, str]:
     """Returns (answer, role used). If the vision model is unavailable, falls back to the text
-    model with the figure description + companion table (architecture §13)."""
-    prompt = build_user_prompt(question, context, retry_note)
+    model with the figure description + companion table (architecture §13). `notes` carries
+    slot-level hints such as how a bare calendar year was interpreted (§4.2)."""
+    prompt = build_user_prompt(question, context, retry_note, notes)
     if context.images and intent == "VISUAL":
         try:
             answer = client.vision_json(
@@ -98,7 +105,7 @@ def generate_answer(
         except LLMError as exc:
             log.warning("vision role unavailable (%s); answering from descriptions", str(exc)[:120])
             prompt = build_user_prompt(
-                question, context.model_copy(update={"images": []}), retry_note
+                question, context.model_copy(update={"images": []}), retry_note, notes
             )
     answer = client.json(
         prompt,

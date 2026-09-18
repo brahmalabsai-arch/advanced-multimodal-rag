@@ -1,0 +1,248 @@
+# Finance glossary for slot extraction and query expansion (architecture §4.2, §4.4).
+#
+# `metrics` map user phrasings to the `line_item_norm` of a row fact (the key) on a statement;
+# `formulas` map phrasings to a formula id in `formulas.yaml`; `statements` map phrasings to a
+# statement id; `lexicons` hold the direction / aggregation / time-anchor words. Matching is
+# longest-phrase-first on the normalised question (lower-case, punctuation stripped), so
+# "total current assets" wins over "current assets" wins over "assets".
+#
+# This file's hash is part of `retrieval_config_hash` (§5.7). Schema: `core/config.py`.
+
+version: 1
+
+statements:
+  balance_sheet:
+    label: Consolidated Balance Sheets
+    synonyms: [balance sheet, balance sheets, statement of financial position, financial position, consolidated balance sheets]
+  income_statement:
+    label: Consolidated Statements of Income
+    synonyms: [income statement, income statements, statement of income, statements of income, statement of operations, profit and loss, p&l, consolidated statements of income]
+  cash_flow:
+    label: Consolidated Statements of Cash Flows
+    synonyms: [cash flow statement, cash flow statements, statement of cash flows, statements of cash flows, cash flows statement, consolidated statements of cash flows]
+
+metrics:
+  # ---------------------------------------------------------------- balance sheet
+  total assets:
+    statement: balance_sheet
+    synonyms: [total assets, asset base, overall assets, total asset value, assets in total]
+  total current assets:
+    statement: balance_sheet
+    synonyms: [total current assets, current assets]
+  cash and cash equivalents:
+    statement: balance_sheet
+    synonyms: [cash and cash equivalents, cash and equivalents, cash equivalents, cash balance, cash on hand, cash holdings, cash position, cash]
+  marketable securities:
+    statement: balance_sheet
+    synonyms: [marketable securities, short-term investments, short term investments, investments in marketable securities, securities portfolio]
+  accounts receivable net:
+    statement: balance_sheet
+    synonyms: [accounts receivable net, accounts receivable, receivables, trade receivables, net receivables, a/r, ar balance]
+  inventories:
+    statement: balance_sheet
+    synonyms: [inventories, inventory, inventory balance, stock on hand, inventory levels]
+  prepaid expenses and other current assets:
+    statement: balance_sheet
+    synonyms: [prepaid expenses and other current assets, prepaid expenses, prepaids, other current assets]
+  property and equipment net:
+    statement: balance_sheet
+    synonyms: [property and equipment net, property and equipment, property plant and equipment, pp&e, ppe, fixed assets]
+  operating lease assets:
+    statement: balance_sheet
+    synonyms: [operating lease assets, right-of-use assets, right of use assets, rou assets, lease assets]
+  goodwill:
+    statement: balance_sheet
+    synonyms: [goodwill, goodwill balance]
+  intangible assets net:
+    statement: balance_sheet
+    synonyms: [intangible assets net, intangible assets, intangibles, net intangibles]
+  deferred income tax assets:
+    statement: balance_sheet
+    synonyms: [deferred income tax assets, deferred tax assets, dta]
+  non marketable equity securities:
+    statement: balance_sheet
+    synonyms: [non marketable equity securities, non-marketable equity securities, nonmarketable equity securities, private equity investments, privately held equity securities, non-marketable investments]
+  other assets:
+    statement: balance_sheet
+    synonyms: [other assets, other non-current assets, other long-term assets]
+  accounts payable:
+    statement: balance_sheet
+    synonyms: [accounts payable, payables, trade payables, a/p]
+  accrued and other current liabilities:
+    statement: balance_sheet
+    synonyms: [accrued and other current liabilities, accrued liabilities, accrued expenses, other current liabilities]
+  short term debt:
+    statement: balance_sheet
+    synonyms: [short term debt, short-term debt, current debt, current portion of debt, current portion of long-term debt, notes due within one year]
+  total current liabilities:
+    statement: balance_sheet
+    synonyms: [total current liabilities, current liabilities]
+  long term debt:
+    statement: balance_sheet
+    synonyms: [long term debt, long-term debt, lt debt, senior notes outstanding, long-term borrowings, non-current debt]
+  long term operating lease liabilities:
+    statement: balance_sheet
+    synonyms: [long term operating lease liabilities, long-term operating lease liabilities, operating lease liabilities, lease liabilities]
+  other long term liabilities:
+    statement: balance_sheet
+    synonyms: [other long term liabilities, other long-term liabilities, other non-current liabilities]
+  total liabilities:
+    statement: balance_sheet
+    synonyms: [total liabilities, liabilities in total, overall liabilities]
+  common stock $0.001 par value 80 000 shares authorized 24 304 shares issued and outstanding as of january 25 2026 24 477 shares issued and outstanding as of january 26 2025:
+    statement: balance_sheet
+    synonyms: [common stock, shares issued and outstanding, shares outstanding, common shares]
+  additional paid in capital:
+    statement: balance_sheet
+    synonyms: [additional paid in capital, additional paid-in capital, apic, paid-in capital]
+  accumulated other comprehensive income:
+    statement: balance_sheet
+    synonyms: [accumulated other comprehensive income, aoci, accumulated other comprehensive income loss]
+  retained earnings:
+    statement: balance_sheet
+    synonyms: [retained earnings, accumulated earnings, accumulated deficit]
+  total shareholders' equity:
+    statement: balance_sheet
+    synonyms: ["total shareholders' equity", "shareholders' equity", "stockholders' equity", "total stockholders' equity", shareholders equity, stockholders equity, total equity, book value, net assets, equity attributable to shareholders]
+  total liabilities and shareholders' equity:
+    statement: balance_sheet
+    synonyms: ["total liabilities and shareholders' equity", total liabilities and equity, total liabilities and stockholders equity]
+
+  # ------------------------------------------------------------- income statement
+  revenue:
+    statement: income_statement
+    synonyms: [revenue, revenues, total revenue, net revenue, sales, net sales, top line, turnover]
+  cost of revenue:
+    statement: income_statement
+    synonyms: [cost of revenue, cost of sales, cost of goods sold, cogs]
+  gross profit:
+    statement: income_statement
+    synonyms: [gross profit, gross income]
+  research and development:
+    statement: income_statement
+    synonyms: [research and development, r&d, r&d expense, r&d expenses, research and development expense, research and development expenses, research and development spending, r&d spending]
+  sales general and administrative:
+    statement: income_statement
+    synonyms: [sales general and administrative, "sales, general and administrative", sg&a, selling general and administrative, sg&a expense, sg&a expenses]
+  total operating expenses:
+    statement: income_statement
+    synonyms: [total operating expenses, operating expenses, opex]
+  operating income:
+    statement: income_statement
+    synonyms: [operating income, income from operations, operating profit, ebit]
+  interest income:
+    statement: income_statement
+    synonyms: [interest income]
+  interest expense:
+    statement: income_statement
+    synonyms: [interest expense, interest cost]
+  other income net:
+    statement: income_statement
+    synonyms: [other income net, other income, other net]
+  total other income net:
+    statement: income_statement
+    synonyms: [total other income net, total other income]
+  income before income tax:
+    statement: income_statement
+    synonyms: [income before income tax, income before taxes, pre-tax income, pretax income, profit before tax]
+  income tax expense:
+    statement: income_statement
+    synonyms: [income tax expense, income taxes, tax expense, provision for income taxes]
+  net income:
+    statement: income_statement
+    synonyms: [net income, net earnings, net profit, bottom line, profit for the year, earnings]
+  basic:
+    statement: income_statement
+    synonyms: [basic net income per share, basic earnings per share, basic eps, net income per share basic]
+  diluted:
+    statement: income_statement
+    synonyms: [diluted net income per share, diluted earnings per share, diluted eps, net income per share diluted, earnings per share, eps, net income per share]
+
+  # --------------------------------------------------------------------- cash flow
+  net cash provided by operating activities:
+    statement: cash_flow
+    synonyms: [net cash provided by operating activities, cash from operations, operating cash flow, cash flow from operations, cash provided by operating activities, cash generated from operations, cfo]
+  net cash used in investing activities:
+    statement: cash_flow
+    synonyms: [net cash used in investing activities, cash used in investing activities, investing cash flow, cash flow from investing]
+  net cash used in financing activities:
+    statement: cash_flow
+    synonyms: [net cash used in financing activities, cash used in financing activities, financing cash flow, cash flow from financing]
+  depreciation and amortization:
+    statement: cash_flow
+    synonyms: [depreciation and amortization, depreciation, amortization, d&a]
+  stock based compensation expense:
+    statement: cash_flow
+    synonyms: [stock based compensation expense, stock-based compensation, stock based compensation, share-based compensation, sbc, equity compensation expense]
+  payments related to repurchases of common stock:
+    statement: cash_flow
+    synonyms: [payments related to repurchases of common stock, share repurchases, stock repurchases, buybacks, share buybacks, stock buybacks, repurchases of common stock, repurchase common stock, repurchased shares]
+  dividends paid:
+    statement: cash_flow
+    synonyms: [dividends paid, dividends, dividend payments, cash dividends, paid in dividends]
+  purchases related to property and equipment and intangible assets:
+    statement: cash_flow
+    synonyms: [purchases related to property and equipment and intangible assets, capital expenditures, capex, purchases of property and equipment]
+  purchases of marketable securities:
+    statement: cash_flow
+    synonyms: [purchases of marketable securities]
+  proceeds from maturities of marketable securities:
+    statement: cash_flow
+    synonyms: [proceeds from maturities of marketable securities, maturities of marketable securities]
+  proceeds from sales of marketable securities:
+    statement: cash_flow
+    synonyms: [proceeds from sales of marketable securities, sales of marketable securities]
+  purchases of non marketable equity securities:
+    statement: cash_flow
+    synonyms: [purchases of non marketable equity securities, purchases of non-marketable equity securities]
+  acquisitions net of cash acquired:
+    statement: cash_flow
+    synonyms: [acquisitions net of cash acquired, acquisitions, cash paid for acquisitions]
+  repayment of debt:
+    statement: cash_flow
+    synonyms: [repayment of debt, debt repayment, debt repaid, repaid debt]
+  cash paid for income taxes net:
+    statement: cash_flow
+    synonyms: [cash paid for income taxes net, cash paid for income taxes, cash taxes paid, income taxes paid]
+  proceeds related to employee stock plans:
+    statement: cash_flow
+    synonyms: [proceeds related to employee stock plans, proceeds from employee stock plans, espp proceeds]
+  payments related to employee stock plan taxes:
+    statement: cash_flow
+    synonyms: [payments related to employee stock plan taxes, employee stock plan taxes, tax withholding on equity awards]
+  change in cash and cash equivalents:
+    statement: cash_flow
+    synonyms: [change in cash and cash equivalents, net change in cash, change in cash]
+  cash and cash equivalents at end of period:
+    statement: cash_flow
+    synonyms: [cash and cash equivalents at end of period, cash at end of period, ending cash balance]
+
+formulas:
+  current_ratio:
+    synonyms: [current ratio, liquidity ratio, working capital ratio]
+  quick_ratio:
+    synonyms: [quick ratio, acid test, acid-test, acid test ratio, acid-test ratio]
+  working_capital:
+    synonyms: [working capital, net working capital]
+  debt_to_equity:
+    synonyms: [debt to equity, debt-to-equity, debt/equity, debt to equity ratio, debt-to-equity ratio, total debt to equity, total debt to equity ratio, leverage ratio, gearing, gearing ratio, d/e ratio]
+  liabilities_to_equity:
+    synonyms: [liabilities to equity, liabilities-to-equity, liabilities to equity ratio, liabilities-to-equity ratio, total liabilities to equity]
+  equity_ratio:
+    synonyms: [equity ratio, equity to assets, equity-to-assets, equity to assets ratio, equity to total assets]
+  cash_and_investments:
+    synonyms: [cash and investments, cash and marketable securities, total cash and marketable securities, cash plus marketable securities, cash pile, total cash, liquidity position, cash and short-term investments, cash war chest]
+
+lexicons:
+  direction:
+    increase: [increase, increased, increases, increasing, grow, grew, grown, growth, rise, rose, risen, up, higher, gain, gained, expand, expanded, improve, improved, jump, jumped, climb, climbed]
+    decrease: [decrease, decreased, decreases, decreasing, decline, declined, declines, fall, fell, fallen, drop, dropped, down, lower, shrink, shrank, reduce, reduced, reduction, contract, contracted, worsen, worsened]
+  aggregation:
+    yoy: [year-over-year, year over year, yoy, y/y, from the prior year, versus the prior year, versus last year, compared to the prior year, compared with the prior year, over the prior year]
+    change: [change, changed, changes, difference, delta, movement, move, moved, vary, varied]
+    growth: [grow, grew, grown, growth, increase, increased, decrease, decreased, decline, declined, rise, rose, fall, fell]
+    pct: [percentage, percent, by what percent, by what percentage, percentage change, percent change]
+    ratio: [ratio, proportion, share of, as a share of, as a percentage of, relative to, divided by]
+    compare: [compare, compared, comparison, versus, vs, vs., against, relative to]
+    total: [total, sum, combined, aggregate, together]
+  time_anchor: [upcoming, next, now, today, current, currently, right now, at present, latest, this year's, forthcoming, scheduled, when is, when will]

@@ -13,7 +13,10 @@ from rag.calc.calculator import CalculationResult
 from rag.graph import PipelineResult
 from rag.query.assemble import ContextBlock
 from rag.query.generate import Answer
+from rag.query.rerank import RerankDecision
 from rag.query.retrieve import Candidate
+from rag.query.scope import ScopeDecision
+from rag.query.slots import QuerySlots
 from rag.query.verify import VerifyResult
 
 router = APIRouter(prefix="/api")
@@ -39,9 +42,30 @@ class CitationOut(BaseModel):
     figure_image_url: str | None = None
 
 
+class AnalysisOut(BaseModel):
+    intent: str
+    rule: str
+    confidence: float
+    source: str
+    llm_called: bool
+    llm_intent: str | None
+    queries: list[dict[str, Any]]
+    section_hints: list[str]
+    sub_questions: list[str]
+    paraphrases: list[str]
+    hyde_passage: str | None
+    hyde_rejected: bool
+    needs_image: bool
+    notes: list[str]
+
+
 class DebugOut(BaseModel):
     intent: str
     intent_rule: str | None
+    slots: QuerySlots
+    scope: ScopeDecision
+    analysis: AnalysisOut
+    rerank: RerankDecision
     retrieval: dict[str, Any]
     candidates: list[Candidate]
     context_blocks: list[ContextBlock]
@@ -112,11 +136,36 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
         debug=DebugOut(
             intent=r.intent,
             intent_rule=r.intent_rule,
+            slots=r.slots.model_copy(update={"matches": []}),
+            scope=r.scope,
+            analysis=AnalysisOut(
+                intent=r.analysis.intent,
+                rule=r.analysis.rule,
+                confidence=r.analysis.confidence,
+                source=r.analysis.source,
+                llm_called=r.analysis.llm_called,
+                llm_intent=r.analysis.llm_intent,
+                queries=[q.model_dump() for q in r.analysis.queries],
+                section_hints=r.analysis.section_hints,
+                sub_questions=r.analysis.sub_questions,
+                paraphrases=r.analysis.paraphrases,
+                hyde_passage=r.analysis.hyde_passage,
+                hyde_rejected=r.analysis.hyde_rejected,
+                needs_image=r.analysis.needs_image,
+                notes=r.analysis.notes,
+            ),
+            rerank=r.rerank,
             retrieval={
                 "queries": r.retrieval.queries,
+                "query_kinds": r.retrieval.query_kinds,
+                "filters": r.retrieval.filters,
+                "filtered_retries": r.retrieval.filtered_retries,
                 "dense_top": r.retrieval.dense_top,
                 "bm25_top": r.retrieval.bm25_top,
+                "fused_count": r.retrieval.fused_count,
                 "filtered_retry": r.retrieval.filtered_retry,
+                "rerank_applied": r.retrieval.rerank_applied,
+                "rerank_skip_reason": r.retrieval.rerank_skip_reason,
             },
             candidates=r.retrieval.candidates,
             context_blocks=r.context.blocks,

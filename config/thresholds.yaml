@@ -7,12 +7,23 @@ retrieval:
   rrf_k: 60
   final_k: 8
   max_retrieval_queries: 4
+expansion:                         # architecture §4.4; Phase 4
+  glossary: true                   # canonical row-fact phrasing per metric / formula input
+  filters: true                    # statement + modality pre-filter on glossary queries (§4.5)
+  llm_fallback: true               # one `small` call when rule confidence < min_rule_confidence
+  min_rule_confidence: 0.8
+  max_paraphrases: 2
+  hyde: false                      # numbers-free HyDE, EXPLANATORY only (D-23): no measured
+                                   # benefit in docs/reports/retrieval_ablation.md, so off by default
+  hyde_regenerate: true            # one retry when the passage contains digits, else dropped
 rerank:
   model: BAAI/bge-reranker-base
   lightweight_alternative: Xenova/ms-marco-MiniLM-L-6-v2
   candidates: 30
   margin_skip_ratio: 0.30
-  drop_floor_logit: -2.0           # calibrate after embedder gate
+  drop_floor_logit: -2.0           # bge-reranker-base logits; see docs/reports/retrieval_ablation.md
+  enabled: false                   # D-24: reranking lowered recall@8 (0.95 -> 0.91 gated) at ~5 s
+                                   # per query on this corpus; gate + reranker stay measurable
   min_keep: 3
 compression:
   skip_budget_tokens: 1500

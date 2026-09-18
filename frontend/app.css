@@ -48,6 +48,11 @@ button { font: inherit; cursor: pointer; }
 .tbl { border-collapse: collapse; width: 100%; font-size: 12px; font-family: var(--mono); }
 .tbl th, .tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; white-space: nowrap; }
 .tbl tr.expanded td { color: var(--muted); }
+.tbl td.wrap { white-space: normal; }
+.kv { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.kv .slot { background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-family: var(--mono); }
+.kv .slot.empty { color: var(--muted); border-style: dashed; }
+.kv .slot b { color: var(--accent-ink); font-weight: 600; }
 pre { background: var(--code-bg); border-radius: 6px; padding: 8px; font-size: 12px; overflow: auto; white-space: pre-wrap; }
 .blocks { display: grid; gap: 8px; }
 .block { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 12px; }

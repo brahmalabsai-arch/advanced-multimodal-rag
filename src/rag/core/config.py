@@ -1,14 +1,15 @@
 """Pydantic schemas and loaders for the YAML configuration files (architecture §11).
 
-Phase 0 covers `models.yaml`, `app.yaml`, `thresholds.yaml`. Glossary, formulas and the
-fiscal calendar get schemas in later phases. All three profile templates in `models.yaml`
-must validate now so that a later model switch fails fast on a typo (FR-6.3, NFR-11).
+Phase 0 covers `models.yaml`, `app.yaml`, `thresholds.yaml`; Phase 3 added `formulas.yaml`;
+Phase 4 adds `fiscal_calendar.yaml` and `glossary.yaml`. All three profile templates in
+`models.yaml` must validate so that a later model switch fails fast on a typo (FR-6.3, NFR-11).
 """
 
 from __future__ import annotations
 
 import os
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -200,6 +201,18 @@ class RetrievalThresholds(BaseModel):
     max_retrieval_queries: int = Field(gt=0)
 
 
+class ExpansionThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    glossary: bool = True
+    filters: bool = True
+    llm_fallback: bool = True
+    min_rule_confidence: float = Field(default=0.8, ge=0, le=1)
+    max_paraphrases: int = Field(default=2, ge=0)
+    hyde: bool = True
+    hyde_regenerate: bool = True
+
+
 class RerankThresholds(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -209,6 +222,7 @@ class RerankThresholds(BaseModel):
     margin_skip_ratio: float = Field(ge=0, le=1)
     drop_floor_logit: float
     min_keep: int = Field(ge=0)
+    enabled: bool = True
 
 
 class StageBThresholds(BaseModel):
@@ -283,6 +297,7 @@ class ThresholdsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     retrieval: RetrievalThresholds
+    expansion: ExpansionThresholds = Field(default_factory=ExpansionThresholds)
     rerank: RerankThresholds
     compression: CompressionThresholds
     cache: CacheThresholds
@@ -318,6 +333,140 @@ class FormulasConfig(BaseModel):
     version: int
     default_statement: str = "balance_sheet"
     formulas: dict[str, Formula]
+
+
+# ----------------------------------------------------------------- fiscal_calendar.yaml
+
+
+class FiscalYearSpan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: date
+    end: date
+
+    @model_validator(mode="after")
+    def _ordered(self) -> FiscalYearSpan:
+        if self.end <= self.start:
+            raise ValueError(f"fiscal year end {self.end} is not after start {self.start}")
+        return self
+
+
+class RelativePeriods(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    latest: list[str] = Field(default_factory=list)
+    prior: list[str] = Field(default_factory=list)
+
+
+class FiscalCalendar(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    entity: str
+    entity_aliases: list[str] = Field(min_length=1)
+    latest_fiscal_year: int
+    bare_year_offset: int = 1
+    fiscal_years: dict[int, FiscalYearSpan]
+    relative_periods: RelativePeriods = Field(default_factory=RelativePeriods)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> FiscalCalendar:
+        if self.latest_fiscal_year not in self.fiscal_years:
+            raise ValueError(
+                f"latest_fiscal_year {self.latest_fiscal_year} is not in fiscal_years "
+                f"{sorted(self.fiscal_years)}"
+            )
+        years = sorted(self.fiscal_years)
+        for earlier, later in zip(years, years[1:], strict=False):
+            if self.fiscal_years[later].start <= self.fiscal_years[earlier].end:
+                raise ValueError(f"fiscal years {earlier} and {later} overlap")
+        return self
+
+    def fiscal_year_of(self, day: date) -> int | None:
+        for fy, span in self.fiscal_years.items():
+            if span.start <= day <= span.end:
+                return fy
+        return None
+
+    def year_end(self, fy: int) -> date | None:
+        span = self.fiscal_years.get(fy)
+        return span.end if span else None
+
+
+# ------------------------------------------------------------------------ glossary.yaml
+
+
+class GlossaryStatement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    synonyms: list[str] = Field(min_length=1)
+
+
+class GlossaryMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str
+    synonyms: list[str] = Field(min_length=1)
+
+
+class GlossaryFormula(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    synonyms: list[str] = Field(min_length=1)
+
+
+class DirectionLexicon(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    increase: list[str]
+    decrease: list[str]
+
+
+class Lexicons(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    direction: DirectionLexicon
+    aggregation: dict[str, list[str]]
+    time_anchor: list[str]
+
+
+class GlossaryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    statements: dict[str, GlossaryStatement]
+    metrics: dict[str, GlossaryMetric]
+    formulas: dict[str, GlossaryFormula]
+    lexicons: Lexicons
+
+    @model_validator(mode="after")
+    def _consistent(self) -> GlossaryConfig:
+        for name, metric in self.metrics.items():
+            if metric.statement not in self.statements:
+                raise ValueError(f"metric {name!r} names unknown statement {metric.statement!r}")
+        seen: dict[str, str] = {}
+        for kind, table in (
+            ("statement", self.statements),
+            ("metric", self.metrics),
+            ("formula", self.formulas),
+        ):
+            for name, entry in table.items():
+                for syn in entry.synonyms:
+                    key = syn.lower().strip()
+                    if key in seen:
+                        raise ValueError(
+                            f"synonym {syn!r} maps to both {seen[key]} and {kind} {name!r}"
+                        )
+                    seen[key] = f"{kind} {name!r}"
+        return self
+
+    def synonym_count(self) -> int:
+        return sum(
+            len(e.synonyms)
+            for table in (self.statements, self.metrics, self.formulas)
+            for e in table.values()
+        )
 
 
 # ------------------------------------------------------------------------------ loaders
@@ -364,4 +513,22 @@ def load_formulas_config(
 ) -> FormulasConfig:
     return FormulasConfig.model_validate(
         load_yaml(_config_path("formulas.yaml", path, settings), _env_from_settings(settings))
+    )
+
+
+def load_fiscal_calendar(
+    path: Path | None = None, settings: Settings | None = None
+) -> FiscalCalendar:
+    return FiscalCalendar.model_validate(
+        load_yaml(
+            _config_path("fiscal_calendar.yaml", path, settings), _env_from_settings(settings)
+        )
+    )
+
+
+def load_glossary_config(
+    path: Path | None = None, settings: Settings | None = None
+) -> GlossaryConfig:
+    return GlossaryConfig.model_validate(
+        load_yaml(_config_path("glossary.yaml", path, settings), _env_from_settings(settings))
     )

@@ -1,0 +1,48 @@
+# Fiscal calendar for slot extraction (architecture §4.2, plan Phase 4).
+#
+# NVIDIA's fiscal year is the 52/53 weeks ending on the last Sunday in January. A calendar date
+# is mapped to the fiscal year whose [start, end] range contains it; the `end` dates are also
+# what "as of Jan 25, 2026" and "fiscal year-end 2025" resolve against. A bare calendar year
+# ("in 2025") is ambiguous: most of calendar 2025 falls in FY2026, so it resolves to `bare_year_offset`
+# years later with a note in the answer (`AMBIGUOUS_2025` → FY2026).
+#
+# This file's hash is part of `retrieval_config_hash` (§5.7).
+
+version: 1
+entity: NVIDIA
+entity_aliases:
+  - nvidia
+  - nvidia corporation
+  - nvidia corp
+  - nvda
+  - the company
+  - the corporation
+
+latest_fiscal_year: 2026
+bare_year_offset: 1
+
+fiscal_years:
+  2024: {start: 2023-01-30, end: 2024-01-28}
+  2025: {start: 2024-01-29, end: 2025-01-26}
+  2026: {start: 2025-01-27, end: 2026-01-25}
+
+# Relative references resolve against `latest_fiscal_year`.
+relative_periods:
+  latest:      # → latest_fiscal_year
+    - last fiscal year
+    - latest fiscal year
+    - most recent fiscal year
+    - current fiscal year
+    - this fiscal year
+    - the fiscal year just ended
+    - end of last fiscal year
+    - last year end
+    - most recent year end
+    - latest year end
+  prior:       # → latest_fiscal_year - 1
+    - prior fiscal year
+    - previous fiscal year
+    - the year before
+    - a year earlier
+    - prior year end
+    - previous year end

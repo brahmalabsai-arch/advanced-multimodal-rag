@@ -31,6 +31,8 @@
         <button type="button" data-q="What drove the first-quarter fiscal 2026 charge related to H20?">H20 charge</button>
         <button type="button" data-q="What are the layers in NVIDIA's five-layer cake?">five-layer cake</button>
         <button type="button" data-q="How did NVIDIA's 5-year total return compare to the S&P 500 and Nasdaq 100?">total return chart</button>
+        <button type="button" data-q="What was the cash pile at FY26 year end?">cash pile (glossary)</button>
+        <button type="button" data-q="Should I buy NVIDIA stock?">out of scope</button>
       </div>
     </section>
 
@@ -51,12 +53,30 @@
       </div>
 
       <details id="debug" class="debug">
-        <summary>Debug panel — retrieval, calculator, tokens and latency</summary>
+        <summary>Debug panel — slots, scope, expansion, retrieval, rerank, calculator, tokens and latency</summary>
         <div class="debug-grid">
           <div>
-            <h4>Retrieval (dense ⊕ BM25 → RRF)</h4>
+            <h4>Query understanding (rules; no model call unless stated)</h4>
+            <div id="slots" class="kv"></div>
+            <h4>Scope gate</h4>
+            <pre id="scope"></pre>
+            <h4>Intent and expansion</h4>
+            <pre id="analysis"></pre>
+            <table id="queries-table" class="tbl">
+              <thead><tr><th>kind</th><th>query</th><th>filter</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <h4>Rerank gate</h4>
+            <pre id="rerank"></pre>
+          </div>
+        </div>
+        <div class="debug-grid">
+          <div>
+            <h4>Retrieval (dense ⊕ BM25 → RRF → rerank)</h4>
             <table id="retrieval-table" class="tbl">
-              <thead><tr><th>#</th><th>chunk</th><th>modality</th><th>page</th><th>dense</th><th>bm25</th><th>rrf</th><th>in ctx</th></tr></thead>
+              <thead><tr><th>#</th><th>chunk</th><th>modality</th><th>page</th><th>dense</th><th>bm25</th><th>rrf</th><th>rerank</th><th>hit by</th><th>in ctx</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>

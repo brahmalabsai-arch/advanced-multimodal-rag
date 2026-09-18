@@ -216,14 +216,36 @@ def evaluate(
             rows.append({**row, "skipped": "out_of_scope"})
             continue
         if retrieval_only:
+            # Phase 4 chain without model calls: slots -> rule intent + expansion -> hybrid
+            # retrieval with per-query filters -> rerank gate / reranker.
+            from rag.core.config import load_thresholds_config
             from rag.query.analyze import analyze
+            from rag.query.rerank import rerank_node
+            from rag.query.slots import extract_slots
 
-            a = analyze(q["question"])
+            th = load_thresholds_config()
+            slots = extract_slots(q["question"])
+            a = analyze(q["question"], slots)
             r = hybrid_retrieve(
-                store, a.retrieval_queries, settings=RetrievalSettings(final_k=k), intent=a.intent
+                store,
+                a.queries,
+                settings=RetrievalSettings(final_k=k, pool_k=th.rerank.candidates),
+                intent=a.intent,
+            )
+            r, decision = rerank_node(
+                store,
+                r,
+                q["question"],
+                intent=a.intent,
+                required_metrics=_required_metrics(slots, a.intent),
+                thresholds=th.rerank,
+                final_k=k,
             )
             row.update(retrieval_metrics(r.top_ids, q["supporting_chunk_ids"], k))
             row["top_ids"] = r.top_ids[:k]
+            row["intent_pred"] = a.intent
+            row["queries"] = a.retrieval_queries
+            row["rerank"] = decision.gate if not decision.applied else "applied"
         else:
             res = pipeline.ask(
                 q["question"], bypass_cache=True, request_id=f"eval-{name}-{q['id']}"
@@ -244,7 +266,12 @@ def evaluate(
                 t.get("pacing_wait_ms", 0) for t in res.tokens_by_model.values()
             )
             row["tokens"] = res.tokens_by_model
+            row["groq_calls"] = sum(t.get("calls", 0) for t in res.tokens_by_model.values())
             row["warning"] = res.warning
+            row["intent_pred"] = res.intent
+            row["scope"] = res.scope.model_dump(include={"in_scope", "score", "rule", "source"})
+            row["queries"] = res.retrieval.queries
+            row["rerank"] = res.rerank.gate if not res.rerank.applied else "applied"
             calcs = [c.model_dump() for c in res.calculations]
             if q.get("expected"):
                 row.update(score_numeric(q, res.answer.answer_markdown, calcs))
@@ -270,6 +297,21 @@ def evaluate(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
     return summary
+
+
+def _required_metrics(slots, intent: str) -> list[str]:  # noqa: ANN001
+    from rag.core.config import load_formulas_config
+
+    if intent == "COMPUTATION" and slots.formulas:
+        cfg = load_formulas_config()
+        items: list[str] = []
+        for fid in slots.formulas:
+            f = cfg.formulas.get(fid)
+            for spec in f.inputs.values() if f else []:
+                if "{metric}" not in spec.line_item and spec.line_item not in items:
+                    items.append(spec.line_item)
+        return items
+    return list(slots.metrics)
 
 
 def _one_line(row: dict[str, Any]) -> str:
