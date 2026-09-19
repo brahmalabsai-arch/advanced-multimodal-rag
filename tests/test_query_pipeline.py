@@ -93,6 +93,10 @@ def test_number_support_rules() -> None:
     assert number_is_supported("5", allowed)  # small count ("5-year")
     assert not number_is_supported("$210,000", allowed)
     assert not number_is_supported("4.2", allowed)
+    assert number_is_supported("5.4%", {0.054})  # ratio restated as a percentage
+    assert number_is_supported("76.1%", {0.761})
+    assert not number_is_supported("5.4", {0.054})  # only the percent form gets ×100
+    assert not number_is_supported("6.1%", {0.054})
 
 
 def test_verifier_passes_a_grounded_answer() -> None:
@@ -446,3 +450,46 @@ def test_debug_payload_exposes_slots_expansion_and_gate_decisions(
         assert d["tokens_by_model"] and sum(t["calls"] for t in d["tokens_by_model"].values()) == 1
         t = c.get(f"/api/trace/{r.json()['request_id']}").json()
         assert t["slots"]["formulas"] == ["current_ratio"] and "rerank_applied" in t
+
+
+# ------------------------------------------------------------------- vision budgets (Phase 4)
+
+
+def test_vision_budgets_follow_role_pacing(settings) -> None:
+    from rag.llm import LLMClient
+
+    client = LLMClient(settings, chat_factory=lambda cfg, role: None, pacing_enabled=False)
+    assert client.max_output_tokens("vision") == 1000  # OTPM bucket, D-52
+    assert client.max_input_tokens("vision", 1000) == 7000  # ITPM gate
+    assert client.max_output_tokens("large") is None
+    assert client.max_input_tokens("large", 1200) == 8000 - 1200
+
+
+def test_fit_images_to_budget_sheds_trailing_images_only() -> None:
+    from rag.query.generate import fit_images_to_budget
+
+    prompt = "word " * 2500  # ≈ 2.5K tokens of context
+    imgs = ["a.png", "b.png", "c.png"]
+    assert fit_images_to_budget(imgs, prompt, None) == imgs
+    assert fit_images_to_budget(imgs, prompt, 7000) == ["a.png"]  # 2 images would exceed 7K
+    assert fit_images_to_budget(imgs, prompt, 20000) == imgs
+    assert fit_images_to_budget(["a.png"], "x" * 40000, 7000) == ["a.png"]  # never drops the first
+
+
+def test_image_data_url_is_bounded_to_vision_max_side(tmp_path: Path) -> None:
+    import base64
+    import io
+
+    from PIL import Image
+
+    from rag.llm import VISION_MAX_SIDE_PX, _image_to_data_url
+
+    big = tmp_path / "big.png"
+    Image.new("RGB", (3300, 1100), "white").save(big)
+    url = _image_to_data_url(big)
+    assert url.startswith("data:image/jpeg;base64,")
+    with Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))) as im:
+        assert max(im.size) == VISION_MAX_SIDE_PX
+    small = tmp_path / "small.png"
+    Image.new("RGB", (400, 300), "white").save(small)
+    assert _image_to_data_url(small).startswith("data:image/png;base64,")

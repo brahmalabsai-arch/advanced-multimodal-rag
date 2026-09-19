@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rag.core.console import utf8_console
 from rag.core.settings import PROJECT_ROOT
 
 sys.path.insert(0, str(PROJECT_ROOT / "eval"))
@@ -467,6 +468,7 @@ def write_report(
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_console()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

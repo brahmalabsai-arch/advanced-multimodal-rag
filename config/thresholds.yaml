@@ -25,18 +25,36 @@ rerank:
   enabled: false                   # D-24: reranking lowered recall@8 (0.95 -> 0.91 gated) at ~5 s
                                    # per query on this corpus; gate + reranker stay measurable
   min_keep: 3
-compression:
+compression:                       # architecture §6; Phase 5
+  enabled: true
+  mode: classifier                 # classifier | never | always (ablation arms; `always` = EXTRACT_LLM on all narrative)
   skip_budget_tokens: 1500
-  dedupe_cosine: 0.95
-  sentence_relevance_tau: 0.55     # calibrate
+  narrative_pressure_ratio: 1.0    # R5: narrative is cut only when candidates exceed the budget (Phase 5
+                                   # ablation: cutting a context that already fits saved 1.4% of large-model
+                                   # input and lost keywords on 2 of 11 narrative answers)
+  dedupe_cosine: 0.98              # Phase 5: the three H20 disclosures sit at 0.94-0.96 and are paraphrases
+                                   # of different length, not copies; 0.95 merged content (G11 lost "license")
+  sentence_relevance_tau: 0.62     # calibrated Phase 5: bge-small sentence-query cosine p50 = 0.60 (gold and non-gold alike); 0.62 keeps ~45% of sentences
   numeric_density_cap: 0.15
   min_reduction_for_llm: 0.40      # quota mode on free tier (§6.6)
   stage_b_thresholds: {keep: 0.35, llm: 0.60}
-cache:
+  stage_b: rules                   # rules | learned (Stage C, §6.7). `learned` scores
+                                   # src/rag/compress/classifier_weights.json with NumPy; Phase 7
+                                   # measured it against the rules — see docs/reports/stage_c_classifier.md
+cache:                             # architecture §5; Phase 6
+  enabled: true                    # false = every request runs the pipeline (cache_tier "bypassed")
   l1: {max_entries: 512, ttl_seconds: 3600, policy: lru}
   l2:
     max_entries: 5000
-    similarity: {slot_rich: 0.90, slot_poor: 0.95}       # 0.90 = RedisVL default distance 0.1
+    similarity: {slot_rich: 0.85, slot_poor: 0.90}       # calibrated Phase 6 (D-59) from the design's 0.90 / 0.95
+                                                          # (RedisVL default distance 0.1): the hard slot guard (entity,
+                                                          # period, metric, direction, negation, ask, aggregation) blocks
+                                                          # 286/286 adversarial pairs on its own; bge-small paraphrases of
+                                                          # the same question sit at cosine 0.80-0.90 while same-slot
+                                                          # *different* questions sit at 0.93-0.97, so a higher threshold
+                                                          # buys no precision and costs recall (docs/reports/cache_threshold_calibration.md)
     ttl_seconds: {filed_fact: 2592000, analytical: 604800, time_anchored: 86400, negative: 86400}
     eviction: {policy: redis_volatile_lfu, lfu_init_val: 5, lfu_log_factor: 10, lfu_decay_minutes: 1440}
+    embed_text: canonical          # raw | normalized | canonical: canonical slot text ("total_assets ... fy2026") gives
+                                   # paraphrases p50 0.869 vs 0.829 normalised (docs/reports/cache_threshold_calibration.md)
   sweep_interval_seconds: 900

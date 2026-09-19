@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| Document version | v0.3 (review rounds 1 and 2 incorporated) |
-| Date | 17 September 2026 |
-| Change log | v0.1 initial proposal · v0.2 review round 1 (hosting, budget, calculator/citations, single-turn, industry-standard cache policy, multimodal strategy) · v0.3 review round 2 (localhost-only build, Groq-only models, Kubernetes removed, online deployment deferred) |
+| Document version | v0.4 (as built through Phase 8, backend complete) |
+| Date | 19 September 2026 |
+| Change log | v0.1 initial proposal · v0.2 review round 1 (hosting, budget, calculator/citations, single-turn, industry-standard cache policy, multimodal strategy) · v0.3 review round 2 (localhost-only build, Groq-only models, Kubernetes removed, online deployment deferred) · v0.4 Phase 8 close-out: decision statuses set from evidence (D-10–D-21, D-47–D-49, D-51), Phase 8 decisions D-63–D-65, §13 degrade modes and startup checks as built, §12.1 evidence index completed, §14 runbook aligned with the README and the fresh-clone rehearsal |
 | Companion documents | [`problemstatement.md`](./problemstatement.md) · [`implementation_plan.md`](./implementation_plan.md) |
 | Citation tags | **[B1]** cache/TTL brainstorm · **[B2]** compression-classifier brainstorm · **[B3]** package reasoning · **[B4]** corpus inspection · **[B5]** query-side design · **[B6-Qn]** review round 1 · **[B7-Qn]** review round 2 · **[R-n]** external references (§17) |
 
@@ -498,6 +498,8 @@ Values now sit inside the commonly used 1–30 day range for LLM response caches
 
 **Localhost note [B7-Q3]:** L2 persists on local disk (`data/cache/`) across server restarts, so TTL expiry, LFU counters, and the sweeper are all observable locally. In dev mode a single injectable clock (`clock.now()`, adjustable from the UI) lets 1-, 7-, and 30-day expiry be tested in seconds (§14, implementation plan Phase 6). Whether a future online host keeps a persistent disk is a deployment-time decision.
 
+**As built (Phase 6, `cache/ttl.py`, D-59).** `ttl_class()` takes the generator's `answer_class` and applies two rule overrides in order: a `time_anchor` slot forces `time_anchored`; an answer that says the report does not contain the information (regex over "not found / not disclosed / does not contain / cannot be determined …") is `negative`. The event-date shortening reads dates written in the answer ("June 24, 2026", ISO): the earliest one still in the future caps `expires_at`; dates in the past leave the plain 1-day TTL. L1 stores `min(L2 expiry, 1 h)` per entry and checks it lazily (`cachetools.TTLCache` only carries the 1-hour ceiling).
+
 ### 5.6 Admission policy
 
 An answer is written to cache only if **all** hold:
@@ -507,11 +509,15 @@ An answer is written to cache only if **all** hold:
 4. The query is self-contained. v1 is single-turn by decision [B6-Q4]; this rule becomes the multi-turn hook in v2 (§15).
 5. The response contains at least one citation.
 
+**As built (Phase 6, `cache/admission.py`).** Rule 3 sends refusals to L1 only (exact canonical key, 1 h): they are deterministic rule output and cost no model call. Rule 4 is a heuristic — a question that reads like a follow-up ("what about that one?", "same for them?") *and* names no anchoring subject is rejected; it is the v2 multi-turn hook. A degraded answer (model call failed) fails rule 1 because the verifier never ran; the trace records `admitted=false` with the failing rules.
+
 ### 5.7 Invalidation via version keys
 
 Every L2 record stores `corpus_version`, `prompt_version`, `generator_model`, `retrieval_config_hash`, `calculator_version`. Lookups apply equality filters on all five in the Chroma `where` clause, so stale-version entries never match. The sweeper deletes non-matching versions asynchronously. A manual `POST /api/admin/cache/purge` endpoint (scope: all | class | slot) exists for emergencies.
 
 Because `generator_model` is a version key, answers generated during the Groq build can **never** be served after switching to Anthropic or Gemini models, and vice versa [B7-Q2].
+
+**As built (Phase 6, `cache/versions.py`, D-59).** Keys are computed once per process from the *parsed* configuration (canonical JSON hashes), so a comment edit does not flush the cache while any value change does: `corpus_version` from the index manifest; `prompt_version` = `PROMPT_VERSION` + hash of the answer system prompt; `generator_model` = `"<large>+<vision>"` of the active profile (VISUAL answers come from the vision role); `retrieval_config_hash` over `thresholds.yaml` minus the `cache:` section plus `cache.l2.embed_text`, the embedder alias, `glossary.yaml` and `fiscal_calendar.yaml`; `calculator_version` over `formulas.yaml`. The same joined string is part of the L1 key, so L1 needs no explicit flush either. **One deviation from the sentence above:** the sweeper *counts* version-mismatched ("stale") records but does not delete them. They are unreachable already (every lookup filters on all five keys), they are the first victims when capacity is short (§5.9), and keeping them is what lets a reverted configuration hit its original entries again (walkthrough step 7, which failed on the first pass when the write under the edited config swept the original). `POST /api/admin/cache/purge {"scope": "stale"}` removes them on demand; otherwise their TTL does.
 
 ### 5.8 Semantic lookup with slot guard (the false-hit defence)
 
@@ -547,6 +553,14 @@ def l2_lookup(query_emb, slots, versions, now):
 - Slot-poor queries (EXPLANATORY, no metric or period): **similarity ≥ 0.95** — stricter than the default, because similarity must do all the work.
 
 Both are calibrated on the adversarial set before release (§5.10). BGE similarity scores cluster toward the high end, so the right absolute value is model-specific.
+
+**As built (Phase 6, `cache/l2.py`, `cache/records.py`, D-59; evidence in `docs/reports/cache_threshold_calibration.md`).**
+
+- *The guard grew from four keys to seven.* Calibration showed that bge-small scores every structured swap (period, metric, direction, negation) at cosine 0.90–0.99 and — worse — scores *same-slot, different-question* pairs ("what were total assets" vs "how does NVIDIA account for total assets") at 0.93–0.97, **above** genuine paraphrases (0.80–0.90). No threshold can separate those, so three keys were added to the hard filter: `negation` (regex over the normalised text), `ask` (what the question asks about its slots — value | reason | method | location | risk | assumption | person | advice — a new `lexicons.ask_type` in `glossary.yaml`, extracted as a slot in `query/slots.py`) and `aggregation_key` (pct / change / compare / ratio / yoy; `total` excluded because it is almost always an unconsumed metric word). `metrics_key` covers metric ids and formula ids together. With the seven keys the guard alone blocks 286/286 adversarial pairs; false-hit rate 0.0 % (NFR-3 ≤ 1 %).
+- *Default entity.* The corpus has one company, so a question that does not name it keys to the calendar's entity rather than a separate bucket — otherwise "Total assets at the end of fiscal 2026?" could never hit the entry written for "What were NVIDIA's total assets…".
+- *Embedded text = canonical slot text* (`total_assets at the end of fy2026`), not the raw question: paraphrase similarity p50 0.869 vs 0.829 normalised / 0.817 raw. `cache.l2.embed_text` selects the mode and is part of `retrieval_config_hash`.
+- *Thresholds 0.85 slot-rich / 0.90 slot-poor* (design 0.90 / 0.95). Because same-slot non-paraphrases score higher than paraphrases, a higher threshold bought no precision and cost recall (0.90 → 36.5 % paraphrase hits, 0.85 → 65.4 %; 55.8 % at the configured split). The threshold is a floor for wording the lexicons do not model; the guard is the defence.
+- *Exact scoring.* The `where` clause (five version keys + seven slot keys + `expires_at > now`) goes to Chroma's `get`, and cosine is computed in numpy over the survivors — the same choice retrieval made in D-54, deterministic on a tiny collection. A hit updates the LFU counter (§5.9) and is promoted to L1 under the exact key of *this* phrasing. The API/UI expose `l2_candidates` and the best rejected similarity on a miss.
 
 ### 5.9 Eviction: Redis-style approximated LFU (L2)
 
@@ -587,6 +601,10 @@ def make_room(now):
 - Redis *samples* a handful of keys to approximate the minimum; with ≤ 5,000 entries this cache evaluates all of them. That makes it an exact version of the same policy, not a different policy.
 - Decay time is scaled from 1 minute to 1 day. Redis's default assumes thousands of accesses per minute; at portfolio/demo traffic (tens to hundreds of queries per day) a 1-minute decay would zero every counter between visits, degrading the policy to near-random. With a 1-day decay and log factor 10, a burst of about a thousand hits (counter ≈ 18) loses its advantage in roughly two weeks — matching the news/earnings-cycle burst scale in W4. Redis documents both knobs as workload-tunable.
 
+**Constants verified (Phase 6, D-30).** Checked against redis.io "Key eviction" (LFU section) and `redis.conf` on 2026-09-18: `lfu-log-factor 10`, `lfu-decay-time 1` (minutes), counter range 0–255, `LFU_INIT_VAL 5` (server.h); the documented table for factor 10 (~100 hits → 10, ~1,000 hits → 18) is reproduced by `tests/test_cache.py` as a mean over seeds (10 ± 1 and 18–20 — the Morris counter is stochastic). `cache/lfu.py` implements `decayed`, `increment`, `on_hit`, `choose_victim` as pure functions with an injectable RNG. One refinement to `make_room`: after the expiry sweep, stale-version records (§5.7) are evicted before any LFU victim.
+
+**Measured cost of exact eviction (Phase 7).** The resource profile put `cache_write` at p50 88 ms because `make_room` swept the whole collection on *every* write, including writes with capacity to spare; a capacity check now guards the scan (`count()`, not `get()`), and an under-capacity write costs **10 ms at 1,000 entries**. When the cache *is* full the exact scan-and-evict costs **182 ms per write at 1,000 entries** and scales linearly — at the configured `L2_MAX_ENTRIES = 5,000` that is on the order of a second. This is the price of the "exact rather than sampled" choice above. It is acceptable here (the working set never approaches 5,000 — §5.10 measured capacities 500 and 1,000 as non-binding) and it is the first thing to change if this cache ever runs full: sample `maxmemory-samples` entries as Redis does, and re-run the benchmark.
+
 **Honest note (unchanged from v0.1):** for one company's annual report at demo traffic, L2 will rarely reach 5,000 entries. TTL classes, version invalidation, and the slot guard do most of the real work in v1. Eviction becomes decisive with multi-company corpora or real traffic. The benchmark exists so this is measured, not assumed.
 
 ### 5.10 Cache-policy benchmark (deliverable)
@@ -600,6 +618,12 @@ def make_room(now):
 - **Metrics:** hit rate, *correct* hit rate (slot-consistent), stale-hit rate (served past class TTL), large-model calls avoided, estimated cost saved per model profile.
 - **Promotion rule:** the chosen standard stays unless a challenger beats its correct-hit rate by **≥ 5 percentage points at two or more capacities**. Otherwise the simpler-to-explain standard wins ties.
 - **Threshold calibration:** adversarial pairs (period swap, metric swap, direction swap, negation) and paraphrase pairs. Choose thresholds that keep false-hit rate ≤ 1% (NFR-3) while maximising paraphrase hit rate.
+
+**As built (Phase 7, `eval/cache_benchmark.py`; results in `docs/reports/cache_policy_benchmark.md`).** The store and the eviction bookkeeping are simulated, but slot extraction, the guard, the canonical embedded text and the bge-small embeddings are the production ones, so a "hit" in the benchmark means what it means at serving time. The log is 5,230 queries over 746 identities (statement line items × three fiscal years × phrasings, the five formulas, the named topics, and 630 one-off tail questions ≈ 12 % of traffic — all the distinct one-offs a single-company corpus affords, short of the 20 % the sketch assumed) across 30 simulated days, with the three bursts. Two findings shaped the rest of the phase:
+
+- **Capacity 500 and 1,000 never bind.** The working set is smaller than either, so every policy is identical there and the comparison only exists at 100 (and at 25 / 50, added for that reason). This is §5.9's "eviction is inert at demo scale" caveat, measured rather than asserted.
+- **The promotion rule holds the chosen policy (D-32).** Redis-style LFU leads at capacity 100 (73.5 % correct hits vs LRU 71.6 %, FIFO 66.5 %, MRU 62.7 %, `volatile-ttl` 59.0 %), but **LRU beats it by 5.5 pp at capacity 25** — under extreme pressure the Morris counter never accumulates enough hits to discriminate, and pure recency wins. One capacity is not the two the rule requires, so the standard stays; if the working set ever approaches the cache size, that result is the one to re-read.
+- The TTL-ignoring arm (`lru_no_ttl`) serves 17 % of its hits past the class TTL at capacity 500 — the cost of dropping the expiry layer, in one number.
 
 ### 5.11 Cache record schema (Chroma collection `semantic_cache`)
 
@@ -624,6 +648,8 @@ def make_room(now):
 - A separate Redis process would be one more service to run locally, for no v1 benefit.
 
 RedisVL's `SemanticCache` [R-7] remains the documented scale-out path, and adopting Redis LFU semantics now keeps that migration behaviour-preserving [B3].
+
+**As built (Phase 6).** The record carries the seven guard fields (`entity`, `periods_key`, `metrics_key`, `direction`, `negation`, `ask`, `aggregation_key`), `id = sha256(embedded text + version keys)[:32]`, and `answer_json` = a `CachedAnswer` (answer, intent, context blocks, calculator rows, verifier result, origin request id, `tokens_saved_est` = model tokens of the original run) — enough to render a hit with citations and the debug panel without touching the index. The collection lives at `data/cache/chroma`; `data/index/chroma` is untouched.
 
 ---
 
@@ -718,6 +744,10 @@ Intuition: if the large model's input price is ~5× the small model's, a chunk m
 - **Guardrails stay:** Stage A rules R1–R4 and R6 remain hard overrides; the learned model replaces only Stage B's weights.
 - **Target:** precision of "compress" ≥ 0.85 — a wrong compression can lose the answer; a missed compression only costs tokens.
 
+**As built (Phase 7, `eval/train_classifier.py`, D-61; results in `docs/reports/stage_c_classifier.md`). Trained, measured, not adopted.** Labels come from a forced `--compression always` run over the whole golden set paired with the no-compression run, as specified: 54 chunk decisions with outcomes, of which 46 are positive. Cross-validated logistic precision is 0.919 (90 % bootstrap CI 0.842–0.977) against 0.881 for the Stage B rules — but "always compress" alone scores 0.852 on this label set, and the CI covers it. With only **8 negative labels**, the rows that teach the model when *not* to compress, the measurement cannot distinguish a learned policy from the base rate. The adoption rule therefore has four conditions (precision ≥ 0.85, beats the rules, beats the majority baseline by ≥ 5 pp, ≥ 20 negatives) and the last one fails, so Stage B keeps its hand-set weights.
+
+What ships anyway, so the decision is a config change rather than a rewrite: `classifier_weights.json` (logistic coefficients, feature order asserted against the serving code by a test), a NumPy `LearnedScorer` that reproduces scikit-learn's probabilities to 1e-9 and never imports scikit-learn at serving, and the `compression.stage_b: rules | learned` switch. Stage A and R6 remain hard overrides in both modes, as §6.7 requires.
+
 ### 6.8 Output and logging
 
 ```json
@@ -732,6 +762,13 @@ Intuition: if the large model's input price is ~5× the small model's, a chunk m
   "tokens_after_est": 3150
 }
 ```
+
+### 6.8a As built (Phase 5)
+
+`compress/features.py` (features from the sentence sidecar and the in-memory chunk vectors, no model call), `compress/classifier.py` (R0–R6 + Stage B + `break_even` in quota or price mode), `compress/compressors.py` (DEDUPE with merged citations, ROW_SELECT on markdown tables, EXTRACT_LIGHT ±1 neighbour, EXTRACT_LLM verbatim copy on the `small` role), `compress/fidelity.py` (numbers must survive verbatim; every non-KEEP output is checked, a violation reverts the chunk and is logged), `compress/pipeline.py` (the graph node and the JSONL decision log with the answer outcome). Two rules were tightened by measurement:
+
+- **R1 applies to narrative text only.** Row facts and table parts of one statement embed within 0.95 of each other because they share the statement boilerplate ("NVIDIA Consolidated Balance Sheets — … as of Jan 25, 2026") while carrying different numbers; the first dry run de-duplicated 193 of 394 candidates, including 7 of G1's 8 row facts. A duplicate must be another narrative chunk.
+- **`sentence_relevance_tau` calibrated to 0.62.** On bge-small the sentence-to-query cosine barely separates labelled from unlabelled narrative (medians 0.60 vs 0.61; p90 0.72 vs 0.72), so density is a weak signal on this corpus; 0.62 keeps ≈ 45 % of sentences. The learned Stage C (Phase 7) should re-weight it.
 
 ### 6.9 Ablation (deliverable)
 
@@ -1161,9 +1198,10 @@ cache:
   l1: {max_entries: 512, ttl_seconds: 3600, policy: lru}
   l2:
     max_entries: 5000
-    similarity: {slot_rich: 0.90, slot_poor: 0.95}       # 0.90 = RedisVL default distance 0.1
+    similarity: {slot_rich: 0.85, slot_poor: 0.90}       # design 0.90 / 0.95; calibrated Phase 6 (D-59)
     ttl_seconds: {filed_fact: 2592000, analytical: 604800, time_anchored: 86400, negative: 86400}
     eviction: {policy: redis_volatile_lfu, lfu_init_val: 5, lfu_log_factor: 10, lfu_decay_minutes: 1440}
+    embed_text: canonical          # raw | normalized | canonical (Phase 6)
   sweep_interval_seconds: 900
 ```
 
@@ -1231,6 +1269,31 @@ paths:
 
 ---
 
+### 12.1 Evidence index (Phases 1–8)
+
+| Question | Report |
+|---|---|
+| Did the parse get the statements right? | `docs/reports/ingestion_phase1.md` |
+| What is in the index; what did enrichment cost? | `docs/reports/ingestion_phase2.md` |
+| How good was the baseline before any advanced component? | `docs/reports/baseline_phase3.md` |
+| Which embedder? | `docs/reports/embedder_gate.md` |
+| Does query expansion help? Does reranking? | `docs/reports/retrieval_ablation.md` |
+| Which generator? | `docs/reports/generator_check.md` |
+| Does the Phase 4 pipeline regress on the golden set? | `docs/reports/golden_phase4_claude.md` |
+| Does compression pay for itself? | `docs/reports/compression_ablation.md` |
+| Where are the cache thresholds from? | `docs/reports/cache_threshold_calibration.md` |
+| Does the cache behave as designed? | `docs/reports/cache_walkthrough.md` |
+| Is the eviction policy the right one? | `docs/reports/cache_policy_benchmark.md` |
+| Should Stage B be learned? | `docs/reports/stage_c_classifier.md` |
+| Is the answer grounded in the context? | `docs/reports/ragas_groq.md` (4/16, Groq judge) · `docs/reports/ragas_claude.md` (full subset) |
+| What does it cost to run locally? | `docs/reports/local_resource_profile.md` |
+| Are the non-functional requirements met? | `docs/reports/nfr_results.md` |
+| Are the deterministic modules covered? | `docs/reports/coverage_phase8.md` |
+| Do the inactive model templates validate? | `docs/reports/model_swap_dry_run.md` |
+| Does the runbook work from a fresh clone? | `docs/reports/fresh_clone_rehearsal.md` |
+
+---
+
 ## 13. Failure modes and mitigations
 
 | Failure | Detection | Mitigation |
@@ -1250,6 +1313,11 @@ paths:
 | Prompt injection text inside the PDF | Context treated as data; sanitised rendering | Answer-only-from-context contract; verifier; DOMPurify |
 | Dev server reachable from local network | Bind address check at startup | `127.0.0.1` binding; admin and clock endpoints disabled unless `APP_ENV=dev` |
 | API key leaked into git or logs | `.gitignore`, log redaction test | `.env` never committed; `.env.example` only |
+| Binary or oversized input in the ask box | `validate_question` (Phase 8) | 422 for empty, > `max_question_chars`, control characters, or no letter/digit |
+| Request outlives the provider's backoff | `asyncio.wait_for` around the pipeline thread (Phase 8) | 504 after `request_timeout_seconds`; the thread finishes and its trace is still written |
+| Index on disk disagrees with its manifest | `check_index` at startup (Phase 8) | Fatal: pipeline not loaded, `/readyz` 503 names the inconsistency (`corpus_version` recompute, `chunks_total`, embedder alias) |
+
+**As built (Phase 8).** The two model-failure rows are one mechanism: `generate` catches `LLMError` inside the graph and returns `degraded_answer(context, exc)` — the top five context blocks with citation id, source, page and a verbatim excerpt, plus any calculator blocks — with `confidence: low`, `degraded: true`, a warning that names the HTTP status (`LLMCallError.status_code`, 429 → "rate-limiting"), `verify.passed = false` and the reason, and a refused cache write (`R1 degraded answer`). The graph routes `generate → cache_write` on `error`, so verification is skipped and every node that ran keeps its latency; the cache lookup that preceded generation stands, which is what "serve from cache if possible" means in practice — a cached answer is served before the model is called. `Pipeline._degraded` remains as the outer fallback for a model error raised anywhere else and now times the LLM-free nodes it re-runs. The vision row is unchanged from D-55. Startup checks (`api/checks.py`: `bind`, `admin`, `secrets`, `index`) run before the pipeline loads; a fatal one leaves the pipeline unloaded and `/readyz` 503. A request-time guard refuses any peer with a routable IP (403). Tests: `tests/test_hardening.py`.
 
 ---
 
@@ -1269,24 +1337,31 @@ flowchart LR
     BR[Browser<br/>http://127.0.0.1:8000] <--> SRV
 ```
 
-### 14.2 Runbook (details in implementation plan Phase 0)
+### 14.2 Runbook (as rehearsed in Phase 8; the README is the authoritative copy)
 
 ```bash
-python3.11 -m venv .venv-ingest && .venv-ingest/bin/pip install -r requirements-ingest.txt
-python3.11 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-cp .env.example .env            # add GROQ_API_KEY
-make ingest                     # parse → chunk → enrich (Groq, cached) → index
-make serve                      # http://127.0.0.1:8000
-make test                       # unit + API tests
+python -m venv .venv && .venv/Scripts/python -m pip install -r requirements-dev.txt && .venv/Scripts/python -m pip install -e . --no-deps
+python -m venv .venv-ingest && .venv-ingest/Scripts/python -m pip install -r requirements-ingest.txt && .venv-ingest/Scripts/python -m pip install -e . --no-deps
+cp .env.example .env                          # add GROQ_API_KEY
+cp /path/to/2026_NVIDIA_ANNUAL_REPORT.pdf data/raw/
+.venv-ingest/Scripts/python -m rag.ingest.run    # make ingest: parse → validate → figures → chunk + enrich (Groq, cached) → index
+.venv/Scripts/python -m pytest                   # make test
+.venv/Scripts/python scripts/check_profile.py --profile all --dry-run   # make check-profile (NFR-11)
+.venv/Scripts/python -m uvicorn rag.api.main:app --host 127.0.0.1 --port 8000   # make serve → http://127.0.0.1:8000
+.venv/Scripts/python scripts/ask_cli.py --api "What were NVIDIA's total assets as of Jan 25, 2026?"
+.venv/Scripts/python scripts/cache_walkthrough.py --api   # the ten Phase 6 steps
 ```
+
+(`.venv/bin/python` on macOS/Linux; the build machine has Python 3.13 only, D-51.) The rehearsal record is `docs/reports/fresh_clone_rehearsal.md`.
 
 Two virtual environments keep Docling's PyTorch dependency out of the serving environment, which makes P7 real on the laptop, not just on paper.
 
 ### 14.3 Localhost-specific behaviour
 
 - **Persistence:** `data/cache` survives restarts, so L2 TTL, LFU counters, and sweeper behaviour are testable locally.
-- **Dev clock:** `core/clock.py` is the only source of "now" for TTL, LFU decay, sweeper, and time-anchored rules. In `APP_ENV=dev`, `POST /api/admin/clock` sets an offset, and the UI buttons (+1d / +7d / +30d / reset) call it. The offset is recorded in every trace.
-- **Security posture for a dev server:** `127.0.0.1` binding, no authentication, admin endpoints only in dev mode, secrets only in `.env`.
+- **Dev clock:** `core/clock.py` is the only source of "now" for TTL, LFU decay, sweeper, and time-anchored rules. In `APP_ENV=dev`, `POST /api/admin/clock` sets an offset, and the UI buttons (+1d / +7d / +30d / reset) call it. The offset is recorded in every trace. *As built (Phase 6, D-46 accepted):* `Clock(allow_offset=settings.is_dev, max_offset_days=400)`; `set_offset` refuses outside dev (HTTP 403). Log timestamps (`ts` in traces, ledger, decision log) stay on the real wall clock — they record when something happened — and `clock_offset_s` in every trace makes a shifted clock visible. Pacing and latency use monotonic clocks and are unaffected. Admin routes are mounted always but answer 404 unless `app.yaml` `env` is in `dev_clock.enabled_in`.
+- **Security posture for a dev server:** `127.0.0.1` binding, no authentication, admin endpoints only in dev mode, secrets only in `.env`. *As built (Phase 8):* `app.yaml` `server.host` must be loopback or startup refuses to load the pipeline (`check_bind`, fatal); a request whose peer address is a routable IP is answered 403 by middleware (`is_loopback_client`); `check_admin_gating` warns when a non-dev environment leaves admin routes enabled; `check_secrets` reports missing provider keys by name only. `/readyz` returns every check with `ok`, `detail`, `fatal`.
+- **Input limits (Phase 8):** `server.max_question_chars` (1,000; wire ceiling 20,000) and `server.request_timeout_seconds` (120) in `app.yaml`; `POST /api/ask` runs the pipeline in a worker thread under `asyncio.wait_for` and answers 504 on timeout.
 
 ### 14.4 Online deployment — deferred decisions
 
@@ -1317,7 +1392,7 @@ The detailed, task-level plan lives in [`implementation_plan.md`](./implementati
 | 5 | Compression classifier | Ablation report; zero fidelity violations |
 | 6 | Semantic cache | Cache walkthrough passes; false-hit ≤ 1% |
 | 7 | Evaluation and benchmarks | All reports produced; NFR table filled |
-| 8 | Hardening — backend complete | Fresh-clone runbook works; model-swap dry run passes |
+| 8 | Hardening — backend complete | Fresh-clone runbook works; model-swap dry run passes — **done 2026-09-19** (`fresh_clone_rehearsal.md`, `model_swap_dry_run.md`, `coverage_phase8.md`) |
 | F1 | *(future)* Switch to advanced models + bake-off | — |
 | F2 | *(future)* Online deployment (Render or similar) | — |
 | F3 | *(future)* Multi-turn and sessions | — |
@@ -1341,18 +1416,18 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 | D-07 | Slot guard as hard filter | Cosine only | Accepted | [B1] §5.8 |
 | D-08 | Admission: verified, cited, medium/high confidence, self-contained | Cache everything | Accepted | [B1] §5.6 |
 | D-09 | LRU, LFU-no-decay, `volatile-ttl`, FIFO, MRU, Random, TTL-only as benchmark challengers | Production use | Accepted | [B6-Q5] §5.10 |
-| D-10 | LLM-free compression classifier: rules → scored → learned | LLM decides | Proposed | [B2] §6.2 |
-| D-11 | Per-chunk compression actions | Binary flag | Proposed | [B2] §6.1 |
-| D-12 | Tables, row facts, figure data protected from LLM compression | Compress all | Proposed | [B2] §6.4 |
-| D-13 | Break-even / quota test gates `EXTRACT_LLM`; profile-dependent budget | Always compress | Proposed | [B2] §6.6 |
-| D-14 | Numeric fidelity guard with fallback | Trust compressor | Proposed | [B2] §4.8 |
-| D-15 | Verbatim sentence extraction; LLMLingua-2 deferred | Token pruning | Proposed | [B2] §6.10 |
-| D-16 | Docling parsing + pdfplumber cross-check | Unstructured, hosted, PyMuPDF | Proposed | [B3] §8.1 |
-| D-17 | Structure-first then semantic chunking (custom) | Pure semantic; langchain_experimental | Proposed | [B5] §3.3 |
-| D-18 | Parent table chunks + row-fact children with numeric metadata | Tables as text | Proposed | [B4] §3.4 |
+| D-10 | LLM-free compression classifier: rules → scored → learned | LLM decides | Accepted (Phase 5; ablation `compression_ablation.md`) | [B2] §6.2 |
+| D-11 | Per-chunk compression actions | Binary flag | Accepted (Phase 5) | [B2] §6.1 |
+| D-12 | Tables, row facts, figure data protected from LLM compression | Compress all | Accepted (Phase 5; 0 fidelity violations) | [B2] §6.4 |
+| D-13 | Break-even / quota test gates `EXTRACT_LLM`; profile-dependent budget | Always compress | Accepted (Phase 5; quota mode on Groq — no prices — price mode at F1) | [B2] §6.6 |
+| D-14 | Numeric fidelity guard with fallback | Trust compressor | Accepted (Phase 5; guard reverted 0 outputs over 377 requests, NFR-6) | [B2] §4.8 |
+| D-15 | Verbatim sentence extraction; LLMLingua-2 deferred | Token pruning | Accepted (Phase 5) | [B2] §6.10 |
+| D-16 | Docling parsing + pdfplumber cross-check | Unstructured, hosted, PyMuPDF | Accepted (Phase 1; identity held, `ingestion_phase1.md`) | [B3] §8.1 |
+| D-17 | Structure-first then semantic chunking (custom) | Pure semantic; langchain_experimental | Accepted (Phase 2) | [B5] §3.3 |
+| D-18 | Parent table chunks + row-fact children with numeric metadata | Tables as text | Accepted (Phase 2–3; calculator 100 % on golden computations) | [B4] §3.4 |
 | D-19 | Figures via vision-model description + image passthrough | CLIP; ColPali | Accepted | [B6-Q6] §3.7 |
-| D-20 | Single `report_chunks` collection with modality metadata | Collection per modality | Proposed | [B3] §8.2 |
-| D-21 | BM25 via rank-bm25 outside Chroma | Chroma Cloud sparse | Proposed | [R-3] |
+| D-20 | Single `report_chunks` collection with modality metadata | Collection per modality | Accepted (Phase 2) | [B3] §8.2 |
+| D-21 | BM25 via rank-bm25 outside Chroma | Chroma Cloud sparse | Accepted (Phase 3; +0.21 recall@8 over dense-only) | [R-3] |
 | D-22 | Rule-first intent; one combined small-LLM analysis call. **Measured (Phase 4):** rules classify 46/48 golden questions as labelled with 0 calls; the combined call fires only when rule confidence < 0.8 (0 of 48 golden questions) — kept as the fallback for cue-free questions | Separate calls | Accepted (Phase 4) | [B5] §4.4, `docs/reports/retrieval_ablation.md` |
 | D-23 | Numbers-free HyDE, EXPLANATORY only. **Measured (Phase 4): no benefit** — EXPLANATORY recall@8 is already 1.00 after hybrid retrieval, the `+llm` arm adds nothing at ~1.8 `small` calls per question; **off by default** (`expansion.hyde: false`), code and digit-rejection test kept | HyDE everywhere | Revised (Phase 4, null result) | [B5] §4.4, `docs/reports/retrieval_ablation.md` |
 | D-24 | Rerank gate; rerank on original query; top 30 on localhost. **Measured (Phase 4): negative** — `bge-reranker-base` lowers recall@8 from 0.95 to 0.91 with the S1–S3 gate (0.86 ungated; MiniLM-L-6 0.88) and costs ≈ 5 s per reranked question on this CPU; the row-fact glossary expansion already solves what a reranker would. **Off by default** (`rerank.enabled: false`); gate, reranker and the ablation arm stay so a larger corpus can re-test | Always rerank | Revised (Phase 4, negative result) | [B5] §4.6, [B7-Q3], `docs/reports/retrieval_ablation.md` |
@@ -1361,34 +1436,42 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 | D-27 | Swappable `MODEL_PROFILE` | Hard-coded provider | Accepted | [B6-Q2], [B7-Q2] |
 | D-28 | Semantic cache in Chroma; RedisVL as scale-out | GPTCache; Redis now | Accepted | §5.11 |
 | D-29 | Split ingest / serve / dev / future dependency files | Single file | Accepted | §8.8 |
-| D-30 | L2 eviction = Redis `volatile-lfu` semantics (exact, 1-day decay, tie → soonest expiry) | allkeys-lru, volatile-ttl, random, noeviction, FIFO, MRU, TTL-only | Accepted | [B6-Q5] §5.4, §5.9 |
+| D-30 | L2 eviction = Redis `volatile-lfu` semantics (exact, 1-day decay, tie → soonest expiry). **Constants verified 2026-09-18** against redis.io / `redis.conf`: log factor 10, decay time 1 min (scaled to 1 day here), counter 0–255, `LFU_INIT_VAL` 5; stale-version records evicted before LFU victims (Phase 6) | allkeys-lru, volatile-ttl, random, noeviction, FIFO, MRU, TTL-only | Accepted (verified Phase 6) | [B6-Q5] §5.4, §5.9, `cache/lfu.py` |
 | D-31 | Similarity 0.90 slot-rich (RedisVL default), 0.95 slot-poor | Single threshold | Accepted | [B6-Q5] §5.8 |
-| D-32 | Promotion rule ≥ 5 pp at ≥ 2 capacities | Best raw hit rate | Proposed | §5.10 |
+| D-32 | Promotion rule ≥ 5 pp at ≥ 2 capacities | Best raw hit rate | **Accepted (applied Phase 7)** — LRU beats the chosen policy by 5.5 pp at capacity 25 only; one capacity is not two, so Redis-style LFU stands | §5.10, `docs/reports/cache_policy_benchmark.md` |
 | D-33 | FastAPI + one uvicorn worker + vanilla HTML/JS (vendored marked + DOMPurify) | Streamlit, Gradio, Flask, SPA | Accepted | [B6-Q1], [B7-Q3] |
 | D-34 | fastembed ONNX; `bge-small` default pending gate; `bge-reranker-base` locally; MiniLM-L6 kept as alternative | sentence-transformers; API embeddings | Revised | [B7-Q3] §7.5 |
 | D-35 | ~~Render free + kind deployment targets~~ | — | Superseded by D-44 | [B6-Q1] |
 | D-36 | ~~kind: 1 replica, PVC, pod presets~~ | — | Superseded by D-44 (kind removed) | [B7-Q1] |
 | D-37 | Ingestion enrichment on Groq, cached by content hash + model id | Paid small vision model | Revised | [B7-Q2] §7.3 |
-| D-38 | Generator bake-off (Anthropic vs Gemini) | Presume provider | Deferred to F1 | [B7-Q2] |
+| D-38 | Generator bake-off (Anthropic vs Gemini). The Groq-internal check (gpt-oss-120b vs qwen3.8-27b, 15 questions) was run in Phase 4: accuracy tied, Qwen ≈ 60 s per answer under its 1,000 OTPM bucket → gpt-oss-120b kept (`docs/reports/generator_check.md`) | Presume provider | Deferred to F1 (Groq check done, Phase 4) | [B7-Q2] |
 | D-39 | Citations mandatory | Optional | Accepted | [B6-Q3] |
 | D-40 | Single-turn v1; multi-turn in F3 | Multi-turn now | Accepted | [B6-Q4] |
 | D-41 | No image-embedding model; description retrieval + passthrough + page fallback + thumbnails | OpenCLIP; ColPali; vision-embedding API | Accepted | [B6-Q6] §3.7 |
 | D-42 | scikit-learn and spaCy offline only | In serving | Accepted | P7, §8.5 |
 | D-43 | Demo access key, rate limit, daily token cap | Open endpoint | Deferred to F2 | [B7-Q3] |
 | D-44 | **v1 runs on localhost only** (127.0.0.1, one process serving API + HTML); online hosting decided after backend completion | Render now; Kubernetes | Accepted | [B7-Q1][B7-Q3] §14 |
-| D-45 | **Groq-only build** via `groq_build`; Anthropic/Gemini profiles as validated, inactive templates | Paid models during build | Accepted | [B7-Q2] §7 |
-| D-46 | Dev-only injectable clock for TTL/LFU testing | Wait real time; mock only in tests | Proposed | [B7-Q3] §14.3 |
-| D-47 | Embedder gate (bge-small vs bge-base) at end of Phase 3, before any threshold calibration | Choose now without data | Proposed | §7.5 |
-| D-48 | Minimal HTML UI lands in Phase 3 and grows with each component | UI only at the end | Proposed | [B7-Q3], implementation plan |
-| D-49 | Two virtual environments (ingest vs serve/dev) | One environment | Proposed | P7 §14.2 |
+| D-45 | **Groq-only build** via `groq_build`; Anthropic/Gemini profiles as validated, inactive templates. **Phase 4 deviation (user decision, 2026-09-18):** the Groq daily window could not carry the full golden re-run, so `langchain-anthropic` / `langchain-google-genai` were installed and the `anthropic` profile used for evaluation runs (`docs/reports/golden_phase4_claude.md`: 48/48, numeric exact match 100%). Serving stays on `groq_build`; `ChatAnthropic` is built without `temperature` (rejected by Claude Sonnet 5 / Opus 5) | Paid models during build | Accepted (evaluation exception, Phase 4) | [B7-Q2] §7 |
+| D-46 | Dev-only injectable clock for TTL/LFU testing (`core/clock.py`; offset only when `APP_ENV=dev`, max 400 days; log timestamps stay real, `clock_offset_s` in every trace) | Wait real time; mock only in tests | Accepted (Phase 6) | [B7-Q3] §14.3 |
+| D-47 | Embedder gate (bge-small vs bge-base) at end of Phase 3, before any threshold calibration | Choose now without data | Accepted (Phase 3; bge-small locked, `embedder_gate.md`) | §7.5 |
+| D-48 | Minimal HTML UI lands in Phase 3 and grows with each component | UI only at the end | Accepted (Phases 3–7; debug, cache and ops panels) | [B7-Q3], implementation plan |
+| D-49 | Two virtual environments (ingest vs serve/dev) | One environment | Accepted (Phase 8; fresh-clone rehearsal, `requirements-serve.txt` has no torch) | P7 §14.2 |
 | D-50 | `groq_build` models refreshed after Groq deprecations: `openai/gpt-oss-20b` (small), `openai/gpt-oss-120b` (large), `qwen/qwen3.8-27b` (vision); free-plan pacing 30 RPM / 8K TPM recorded | Keep v0.3 Llama ids (shut down for free tier) | Accepted (Phase 0, 2026-09-17) | §7.2, `config/models.yaml` |
 | D-52 | Groq free tier enforces per-model limits the console table does not show: **output tokens per minute** (vision 1,000 OTPM, charged on the *requested* `max_tokens`) and a rolling **200K tokens per day**. Pacing gained an `otpm` bucket, vision `max_tokens` is 500 with `reasoning_effort: none`, and a `retry-after` over 120 s fails fast so the cache-driven re-run picks the item up later | Block inside the request until the window frees | Accepted (Phase 2) | §7.2, `core/pacing.py`, `llm.py` |
 | D-53 | Chunk boundary detection always uses `bge-small` sentence embeddings (one `chunks.jsonl`); each index re-embeds the same chunks with its own embedder. Keeps the Phase 3 embedder gate a retrieval-only comparison | Re-chunk per embedder | Accepted (Phase 2) | §3.3, `ingest/run.py` |
 | D-54 | **Dense search is exact cosine over in-memory vectors** loaded from Chroma at startup; Chroma remains the persistent store (and the Phase 6 `semantic_cache`). Measured in Phase 3: Chroma's HNSW query dropped the true top hit (`rowfact_p141_goodwill`) in one process and not another on the 689-chunk index; brute force is ≈1 ms and deterministic (NFR-9) | Tune HNSW `ef_search` and accept approximate results | Accepted (Phase 3) | `query/store.py` |
-| D-55 | Vision-unavailable fallback: a VISUAL question whose vision call fails (quota, preview withdrawn) is answered by the `large` text model from the figure description + companion table, with the figure still shown in the UI | Fail the request | Accepted (Phase 3) | §13, `query/generate.py` |
+| D-55 | Vision-unavailable fallback: a VISUAL question whose vision call fails (quota, preview withdrawn) is answered by the `large` text model from the figure description + companion table, with the figure still shown in the UI. **Phase 4 finding:** every Phase 3 "fallback" was in fact a client-side rejection — the answer path requested `max_tokens` 1,200 against the 1,000 OTPM bucket, then two raw 200-DPI PNGs against Groq's 7,000 **input**-tokens-per-minute gate (413, 2,048 charged per image whatever its size). Fixed by capping the vision `max_tokens` at the OTPM bucket, bounding images to 1,600 px in `rag/llm.py` (as ingestion already did), modelling `itpm` in `models.yaml` pacing and shedding trailing images until text + 2,048/image fits. G13 now answers on the vision role (4.0K in / 178 out, ≈ 2 s) | Fail the request | Revised (Phase 4) | §13, `query/generate.py`, `llm.py` |
 | D-56 | Slot extraction is longest-phrase-first with consumed spans over a normalised question; `metrics` (row-fact keys) and `formulas` (formula ids) are separate slots; bare years become `AMBIGUOUS_<year>` resolved one fiscal year forward with a note the generator repeats. Glossary (`config/glossary.yaml`, 325 synonyms) and fiscal calendar (`config/fiscal_calendar.yaml`) are validated Pydantic configs | LLM slot extraction; single metric slot | Accepted (Phase 4) | §4.2, `query/slots.py` |
 | D-57 | Glossary / decomposition expansion queries are phrased like row-fact documents and carry a `statement` + `modality` pre-filter, **for numeric intents only**; the original question always runs unfiltered. Measured: recall@8 0.73 → 0.95, MRR 0.46 → 0.91, zero model calls; the filter itself adds +0.02 recall / +0.05 MRR over unfiltered expansion. Row-fact queries on EXPLANATORY questions pushed narrative out of the top 8 (E3/E4 → 0.0), hence the intent restriction | Expansion for every intent; filters on every query | Accepted (Phase 4) | §4.4–4.5, `query/analyze.py`, `docs/reports/retrieval_ablation.md` |
-| D-51 | Build machine runs Python 3.13 (3.11 not installed); `requires-python >= 3.11` kept so either works. Docling/spaCy/onnxruntime wheel availability on 3.13 verified when `.venv-ingest` is created | Install 3.11 separately | Proposed (Phase 0) | §8 |
+| D-58 | Compression classifier as specified (§6), with R1 restricted to narrative chunks and `sentence_relevance_tau` 0.62; the node sits between rerank and calculate, every compressor output passes the numeric fidelity guard, and `data/logs/compression_decisions.jsonl` records features, decisions and the answer outcome. Measured: see `docs/reports/compression_ablation.md` | Compress by rerank score alone; LLM decides | Accepted (Phase 5) | §4.7–4.8, §6, `rag/compress/` |
+| D-59 | **Cache slot guard extended and thresholds calibrated (Phase 6).** Calibration on 286 adversarial + 52 paraphrase pairs (`eval/build_cache_pairs.py`, `eval/cache_threshold_calibration.py`) showed bge-small scoring structured swaps at 0.90–0.99 and *same-slot different-question* pairs at 0.93–0.97 — above genuine paraphrases (0.80–0.90) — so similarity cannot carry precision. The hard guard gained `negation`, `ask` (new `lexicons.ask_type` slot: value / reason / method / location / risk / assumption / person / advice) and `aggregation_key`; unnamed entity keys to the calendar entity; the embedded text is the canonical slot text; thresholds 0.85 slot-rich / 0.90 slot-poor (from 0.90 / 0.95). Result: 286/286 adversarial pairs miss (false-hit rate 0.0 %, NFR-3), 55.8 % paraphrase hits. Also: stale-version records are kept until TTL (first eviction victims, `purge stale`) so a reverted config hits again — walkthrough step 7. Caveat: the adversarial set is template-generated; a hand-written guard-passing set remains to be written | Similarity-only guard at 0.95; rerank cross-encoder on cache candidates; LLM judge | Accepted (Phase 6) | §5.7–5.8, `rag/cache/`, `docs/reports/cache_threshold_calibration.md`, `docs/reports/cache_walkthrough.md` |
+| D-60 | **`topic_key` added to the cache slot guard (Phase 7).** The policy benchmark caught "when is the annual meeting" and "what is the record date for the annual meeting" sharing every guard key and embedding at cosine 0.92 — a false hit the Phase 6 pair set never posed. A `lexicons.topic_terms` list in `glossary.yaml` (named subjects that are not statement line items: annual meeting, record date, gross margin, H20, export controls, the five-layer cake, total return, pay mix …) becomes a `topics` slot and an eighth guard key. The same benchmark then showed the residual false hits were questions *about* a metric (where it is disclosed, who signs it, whether it is audited) served the metric's *value* entry, so `lexicons.ask_type` gained the matching cues. Measured: benchmark false-hit rate 4.91 % → 1.36 % at unbounded capacity and 0.19 % at capacity 100; adversarial pairs stay at 0.0 %; paraphrase hit rate unchanged at 55.8 % | Raise the similarity threshold; add a cross-encoder over cache candidates | Accepted (Phase 7) | §5.8, `query/slots.py`, `config/glossary.yaml` |
+| D-61 | **Stage C trained but not adopted (Phase 7).** Logistic precision 0.919 (CI 0.842–0.977) vs rules 0.881 vs "always compress" 0.852, on 54 labels with 8 negatives. The adoption rule (precision ≥ 0.85, beats the rules, beats the majority baseline by ≥ 5 pp, ≥ 20 negatives) fails its last condition, so the hand-set Stage B weights stay. The weights file, the NumPy scorer and the `compression.stage_b` flag ship, so adopting later is a config change | Adopt on precision alone; drop Stage C entirely | Accepted (Phase 7) | §6.7, `eval/train_classifier.py`, `docs/reports/stage_c_classifier.md` |
+| D-62 | **RAGAS metrics implemented in-repo rather than via the `ragas` package (Phase 7).** `ragas` 0.4.3 imports `langchain_community.chat_models.vertexai`, removed from the sunset `langchain-community` 0.4.2; downgrading would drag the serving stack (langchain-core / langchain-groq 1.x) backwards. The four metric definitions are implemented against the project's own `LLMClient` with a Groq judge and labelled indicative | Downgrade langchain-community; skip the metrics | Accepted (Phase 7) | §12, `eval/ragas_eval.py` |
+| D-63 | **Degrade inside the graph (Phase 8).** `generate` catches `LLMError` and returns a retrieval-only view (top cited blocks + calculator blocks, verbatim excerpts, `degraded: true`, `confidence: low`, warning with the HTTP status); the graph routes to `cache_write`, which refuses it. Rationale: handling the failure as a node keeps every latency and the preceding cache lookup, and the Phase 7 profile had shown the outer fallback losing the latency table. `LLMCallError` carries `status_code` so 429 reads as rate-limiting rather than a generic failure | Raise to the API (500); outer try/except only | Accepted (Phase 8) | §13, `graph.py`, `tests/test_hardening.py` |
+| D-64 | **Startup checks, loopback guard and input limits (Phase 8).** `api/checks.py` runs `bind` (fatal), `admin`, `secrets`, `index` (fatal: manifest recompute of `corpus_version`, `chunks_total` vs `chunks.jsonl`, embedder alias vs `thresholds.yaml`) before the pipeline loads, reported in `/readyz`; middleware refuses routable peer IPs (403); `validate_question` rejects empty / oversized / control-character / wordless input (422); `asyncio.wait_for` answers 504 after `request_timeout_seconds`. In-process test clients (`testclient`) are not IPs and pass the guard by design | Trust `--host` alone; validate only length | Accepted (Phase 8) | §13, §14.3, NFR-12 |
+| D-65 | **Model-swap dry run as the NFR-11 gate (Phase 8).** `scripts/check_profile.py` validates a profile with no network: config, roles, package, key presence (names only), chat-model construction with the profile's `provider_kwargs` (placeholder key when none), budgets vs pacing, structured-output mode, prices, enrichment roles. Finding: LangChain does not reject an unknown provider kwarg — it forwards it to `model_kwargs` with a `UserWarning` and the provider would 400 at the first request — so the dry run captures that warning and reports it. All four profiles pass (`model_swap_dry_run.md`); `anthropic` and `gemini` warn only for missing prices (quota mode) and, on a fresh clone, the not-yet-installed provider package. Coverage gate: `scripts/coverage_gate.py` requires ≥ 90 % per deterministic module (measured 97.1 % overall, lowest 92.9 %) | Live smoke call as the gate; import check only | Accepted (Phase 8) | §7.1, `docs/reports/model_swap_dry_run.md`, `docs/reports/coverage_phase8.md` |
+| D-51 | Build machine runs Python 3.13 (3.11 not installed); `requires-python >= 3.11` kept so either works. Docling/spaCy/onnxruntime wheel availability on 3.13 verified when `.venv-ingest` is created | Install 3.11 separately | Accepted (Phase 8; both environments and the rehearsal ran on 3.13) | §8 |
 
 ---
 
@@ -1423,7 +1506,8 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 
 Round 1 (Q1–Q6) and round 2 (Q1–Q3) are recorded in §0.
 
-### 18.2 Still open (none block Phase 0)
+### 18.2 Still open at the backend-complete gate
 
-1. **Golden set authorship** — explanatory-question reference answers need a human check; confirm you will review the golden set drafted in Phase 3.
-2. **Repository visibility** — public from day one on `brahmalabsai-arch`, or private until Phase 8?
+1. **Golden set authorship** — 13 of 48 rows carry `review_status: needs_human_review`; the RAGAS context metrics are judged against those reference answers, so each row needs a reader to confirm `reference_answer` and `expected_keywords` against the cited page before those numbers are quoted.
+2. **Repository visibility** — the working tree is ready to commit and tag `v1.0-backend`; public or private is the owner's call.
+3. **The deferred decisions of §14.4** (F1 host/provider, F2 hosting, F3 sessions) — inputs listed in the README's *Deferred decisions* section.

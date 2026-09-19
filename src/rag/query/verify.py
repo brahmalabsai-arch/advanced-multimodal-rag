@@ -95,8 +95,11 @@ def number_is_supported(token: str, allowed: set[float]) -> bool:
         return True
     decimals = _decimals(token)
     tolerance = 0.5 * 10 ** (-decimals) + 1e-9
+    # "5.4%" is a legitimate restatement of a ratio of 0.054 (Phase 4: seen on three
+    # computation answers); only percent tokens get the ×100 scale.
+    scales = (*SCALE_FACTORS, 100.0) if token.endswith("%") else SCALE_FACTORS
     for a in allowed:
-        for scale in SCALE_FACTORS:
+        for scale in scales:
             candidate = a * scale
             if abs(abs(candidate) - abs(value)) <= tolerance:
                 return True

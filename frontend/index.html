@@ -33,6 +33,77 @@
         <button type="button" data-q="How did NVIDIA's 5-year total return compare to the S&P 500 and Nasdaq 100?">total return chart</button>
         <button type="button" data-q="What was the cash pile at FY26 year end?">cash pile (glossary)</button>
         <button type="button" data-q="Should I buy NVIDIA stock?">out of scope</button>
+        <button type="button" data-q="When is NVIDIA's 2026 annual meeting of stockholders?">annual meeting (time-anchored)</button>
+      </div>
+    </section>
+
+    <!-- cache panel v4 (Phase 6): tiers, TTL classes, LFU, dev clock -->
+    <section id="cache-panel" class="cache-panel">
+      <div class="cache-head">
+        <h3>Semantic cache <span class="meta">L1 exact · L2 semantic (slot guard) · Redis-style LFU · TTL classes</span></h3>
+        <span id="cache-stats" class="meta">loading…</span>
+      </div>
+      <div class="cache-controls">
+        <span class="clock" id="clock-display">clock: real time</span>
+        <button type="button" class="mini" data-adv="86400">+1 d</button>
+        <button type="button" class="mini" data-adv="604800">+7 d</button>
+        <button type="button" class="mini" data-adv="2592000">+30 d</button>
+        <button type="button" class="mini" id="clock-reset">reset clock</button>
+        <span class="spacer"></span>
+        <button type="button" class="mini" id="cache-sweep">sweep now</button>
+        <button type="button" class="mini danger" id="cache-purge">purge all</button>
+        <button type="button" class="mini" id="cache-entries-toggle">entries</button>
+      </div>
+      <div id="cache-request" class="cache-request kv hidden"></div>
+      <div id="cache-entries" class="hidden">
+        <table id="cache-entries-table" class="tbl">
+          <thead><tr><th>class</th><th>slots</th><th>query</th><th>lfu</th><th>hits</th><th>expires</th><th>created</th><th>intent</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ops panel (Phase 7): what the logs say about the last N requests -->
+    <section id="ops-panel" class="cache-panel">
+      <div class="cache-head">
+        <h3>Operations <span class="meta">last <span id="ops-window">500</span> requests from data/logs — cache, models, quality, latency</span></h3>
+        <span class="cache-controls">
+          <button type="button" class="mini" id="ops-refresh">refresh</button>
+          <button type="button" class="mini" id="ops-toggle">show</button>
+        </span>
+      </div>
+      <div id="ops-body" class="hidden">
+        <div class="ops-grid">
+          <div>
+            <h4>Cache hit rate over time <span class="meta">oldest → newest, bypassed requests excluded</span></h4>
+            <div id="ops-spark" class="spark"></div>
+            <pre id="ops-cache"></pre>
+          </div>
+          <div>
+            <h4>Models by role</h4>
+            <table id="ops-models" class="tbl">
+              <thead><tr><th>role</th><th>model</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>pacing wait</th><th>retries</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <h4>Quality</h4>
+            <pre id="ops-quality"></pre>
+          </div>
+        </div>
+        <div class="ops-grid">
+          <div>
+            <h4>Latency per node (ms)</h4>
+            <table id="ops-latency" class="tbl">
+              <thead><tr><th>node</th><th>n</th><th>p50</th><th>p95</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <h4>Compression decision mix</h4>
+            <pre id="ops-compression"></pre>
+            <h4>Process</h4>
+            <pre id="ops-process"></pre>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -53,7 +124,7 @@
       </div>
 
       <details id="debug" class="debug">
-        <summary>Debug panel — slots, scope, expansion, retrieval, rerank, calculator, tokens and latency</summary>
+        <summary>Debug panel — slots, scope, expansion, retrieval, rerank, compression, calculator, tokens and latency</summary>
         <div class="debug-grid">
           <div>
             <h4>Query understanding (rules; no model call unless stated)</h4>
@@ -70,6 +141,12 @@
           <div>
             <h4>Rerank gate</h4>
             <pre id="rerank"></pre>
+            <h4>Compression (classifier, no model call unless EXTRACT_LLM)</h4>
+            <pre id="compression"></pre>
+            <table id="compression-table" class="tbl">
+              <thead><tr><th>chunk</th><th>modality</th><th>decision</th><th>applied</th><th>tokens</th><th>density</th><th>dup</th><th>fidelity</th><th>reason</th></tr></thead>
+              <tbody></tbody>
+            </table>
           </div>
         </div>
         <div class="debug-grid">

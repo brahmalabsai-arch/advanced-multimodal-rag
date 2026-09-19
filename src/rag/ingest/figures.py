@@ -360,6 +360,8 @@ def figure_prompt(candidate: FigureCandidate, context_text: str) -> str:
 
 
 def _downscaled_data_url(path: Path, max_side: int = VISION_MAX_SIDE_PX) -> str:
+    """Same bound the LLM client applies to every vision image (`rag.llm.VISION_MAX_SIDE_PX`);
+    kept here so the enrichment cache key sees the identical payload it always did."""
     from PIL import Image
 
     with Image.open(path) as im:

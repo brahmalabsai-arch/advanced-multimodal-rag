@@ -15,7 +15,7 @@ endif
 PY        := $(VENV_BIN)/python
 PY_INGEST := $(INGEST_BIN)/python
 
-.PHONY: setup setup-serve setup-ingest lock ingest index-base inspect serve test lint format eval eval-retrieval embedder-gate ask bench smoke clean
+.PHONY: setup setup-serve setup-ingest lock ingest index-base inspect serve test coverage lint format eval eval-retrieval embedder-gate ask bench smoke check-profile walkthrough clean
 
 setup: setup-serve setup-ingest
 
@@ -55,6 +55,10 @@ serve:
 test:
 	$(PY) -m pytest
 
+# Phase 8: >= 90 % line coverage on the deterministic modules (rule G4); writes docs/reports/coverage_phase8.md
+coverage:
+	$(PY) scripts/coverage_gate.py
+
 lint:
 	$(PY) -m ruff check .
 	$(PY) -m ruff format --check .
@@ -83,6 +87,15 @@ bench:
 # Phase 0 exit criterion: one call per role, three ledger lines.
 smoke:
 	$(PY) scripts/smoke_llm.py
+
+# Phase 8: validate a model profile with no network calls (NFR-11). PROFILE=anthropic|gemini|groq_build|all
+PROFILE ?= all
+check-profile:
+	$(PY) scripts/check_profile.py --profile $(PROFILE) --dry-run
+
+# Phase 6: the ten-step cache walkthrough against a running server (make serve first)
+walkthrough:
+	$(PY) scripts/cache_walkthrough.py
 
 clean:
 	$(PY) -c "import shutil,pathlib; [shutil.rmtree(p, ignore_errors=True) for p in ['.pytest_cache','.ruff_cache']]"

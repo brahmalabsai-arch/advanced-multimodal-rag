@@ -1,15 +1,26 @@
-"""Core endpoints (architecture §8.3): /api/ask, /api/figures/{id}, /api/pages/{n}, /api/trace/{id}."""
+"""Core endpoints (architecture §8.3): /api/ask, /api/figures/{id}, /api/pages/{n}, /api/trace/{id}.
+
+Input limits (Phase 8, §13): a question is rejected with 422 when it is empty or whitespace,
+longer than `server.max_question_chars`, contains control characters (binary pasted into the
+box) or has no letter or digit at all. A request that outlives `server.request_timeout_seconds`
+answers 504; the pipeline thread finishes on its own and its trace line is still written.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import re
+import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from rag.cache.records import CacheInfo
 from rag.calc.calculator import CalculationResult
+from rag.compress.pipeline import CompressionOutcome
 from rag.graph import PipelineResult
 from rag.query.assemble import ContextBlock
 from rag.query.generate import Answer
@@ -21,13 +32,32 @@ from rag.query.verify import VerifyResult
 
 router = APIRouter(prefix="/api")
 
-MAX_QUESTION_CHARS = 1000
+# Hard ceiling on the wire; the configured limit (`server.max_question_chars`, default 1,000)
+# is enforced per request in `validate_question`.
+MAX_QUESTION_CHARS = 20000
 _FIGURE_ID = re.compile(r"^p\d{1,3}_\d{1,3}$")
+_ALLOWED_CONTROL = {chr(9), chr(10), chr(13)}
 
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     bypass_cache: bool = False
+
+
+def validate_question(question: str, max_chars: int) -> str:
+    """Return the stripped question or raise the 422 that explains what was wrong."""
+    q = question.strip()
+    if not q:
+        raise HTTPException(status_code=422, detail="question is empty")
+    if len(q) > max_chars:
+        raise HTTPException(
+            status_code=422, detail=f"question is longer than {max_chars} characters"
+        )
+    if any(unicodedata.category(ch) == "Cc" and ch not in _ALLOWED_CONTROL for ch in q):
+        raise HTTPException(status_code=422, detail="question contains control characters")
+    if not any(ch.isalnum() for ch in q):
+        raise HTTPException(status_code=422, detail="question has no words")
+    return q
 
 
 class CitationOut(BaseModel):
@@ -66,6 +96,7 @@ class DebugOut(BaseModel):
     scope: ScopeDecision
     analysis: AnalysisOut
     rerank: RerankDecision
+    compression: dict[str, Any]
     retrieval: dict[str, Any]
     candidates: list[Candidate]
     context_blocks: list[ContextBlock]
@@ -87,9 +118,11 @@ class AskResponse(BaseModel):
     question: str
     answer: Answer
     cache_tier: str
+    cache: CacheInfo
     citations: list[CitationOut]
     figures: list[CitationOut]
     warning: str | None = None
+    degraded: bool = False
     debug: DebugOut
 
 
@@ -97,6 +130,38 @@ def _figure_id(image_path: str | None) -> str | None:
     if not image_path:
         return None
     return image_path.rsplit("/", 1)[-1].removesuffix(".png")
+
+
+def _compression_out(c: CompressionOutcome) -> dict[str, Any]:
+    """Summary plus one row per chunk (decision, applied action, tokens, fidelity)."""
+    out = c.summary()
+    by_id = c.by_id
+    rows = []
+    for d in c.decision.chunks if c.decision else []:
+        applied = by_id.get(d.chunk_id)
+        rows.append(
+            {
+                "chunk_id": d.chunk_id,
+                "modality": d.features.modality,
+                "action": d.action,
+                "applied": applied.applied if applied else d.action,
+                "reason": d.reason,
+                "stage": d.stage,
+                "score": d.score,
+                "tokens_before": d.features.chunk_tokens,
+                "tokens_after": applied.tokens_after if applied else d.features.chunk_tokens,
+                "relevance_density": d.features.relevance_density,
+                "max_dup_sim": d.features.max_dup_sim,
+                "numeric_density": d.features.numeric_density,
+                "note": applied.note if applied else None,
+                "reverted": applied.reverted if applied else False,
+                "fidelity_ok": applied.fidelity.ok if applied and applied.fidelity else None,
+                "merged_into": applied.merged_into if applied else None,
+            }
+        )
+    out["chunks"] = rows
+    out["query"] = c.decision.query.model_dump(exclude={"queries"}) if c.decision else None
+    return out
 
 
 def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - IndexStore
@@ -130,9 +195,11 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
         question=r.question,
         answer=r.answer,
         cache_tier=r.cache_tier,
+        cache=r.cache,
         citations=citations,
         figures=figures,
         warning=r.warning,
+        degraded=r.degraded,
         debug=DebugOut(
             intent=r.intent,
             intent_rule=r.intent_rule,
@@ -155,6 +222,7 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
                 notes=r.analysis.notes,
             ),
             rerank=r.rerank,
+            compression=_compression_out(r.compression),
             retrieval={
                 "queries": r.retrieval.queries,
                 "query_kinds": r.retrieval.query_kinds,
@@ -185,13 +253,23 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
 
 
 @router.post("/ask", response_model=AskResponse)
-def ask(body: AskRequest, request: Request) -> AskResponse:
+async def ask(body: AskRequest, request: Request) -> AskResponse:
+    server = request.app.state.app_config.server
+    question = validate_question(body.question, server.max_question_chars)
     pipeline = request.app.state.pipeline
     if pipeline is None:
         raise HTTPException(status_code=503, detail="pipeline not ready")
-    if not body.question.strip():
-        raise HTTPException(status_code=422, detail="question is empty")
-    result = pipeline.ask(body.question, bypass_cache=body.bypass_cache)
+    try:
+        result = await asyncio.wait_for(
+            run_in_threadpool(pipeline.ask, question, bypass_cache=body.bypass_cache),
+            timeout=server.request_timeout_seconds,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"request exceeded {server.request_timeout_seconds:g}s; the model provider "
+            "may be backing off — try again or ask a cached question",
+        ) from None
     return to_response(result, pipeline.store)
 
 

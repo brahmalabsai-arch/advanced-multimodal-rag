@@ -13,8 +13,11 @@ import argparse
 import json
 import sys
 
+from rag.core.console import utf8_console
+
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_console()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

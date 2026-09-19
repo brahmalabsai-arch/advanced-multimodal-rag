@@ -69,7 +69,16 @@ class LLMJSONError(LLMError):
 
 
 class LLMCallError(LLMError):
-    """The provider call failed after all retries."""
+    """The provider call failed after all retries. `status_code` carries the provider's HTTP
+    status when there was one, so the degrade path can say *why* (429 vs 400 vs outage)."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def rate_limited(self) -> bool:
+        return self.status_code == 429
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -129,7 +138,16 @@ def _strip_fences(text: str) -> str:
     return _FENCE.sub("", text).strip()
 
 
-def _image_to_data_url(image: Path | bytes | str) -> str:
+# Groq charges image tokens by pixel area; figure crops rasterised at 200 DPI (up to ~3300 px
+# wide) cost ~3K input tokens raw against a 7K ITPM bucket, versus ~1.1K once bounded to this
+# side length. The same bound is applied at ingestion, so descriptions and answers see the
+# same picture.
+VISION_MAX_SIDE_PX = 1600
+
+
+def _image_to_data_url(image: Path | bytes | str, max_side: int = VISION_MAX_SIDE_PX) -> str:
+    """Encode an image for a vision request, bounding its longer side to `max_side` px (JPEG).
+    Pre-built `data:` URLs pass through untouched."""
     if isinstance(image, str) and image.startswith("data:"):
         return image
     if isinstance(image, bytes):
@@ -138,6 +156,20 @@ def _image_to_data_url(image: Path | bytes | str) -> str:
         path = Path(image)
         data = path.read_bytes()
         mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as im:
+            if max(im.size) > max_side:
+                im = im.convert("RGB")
+                im.thumbnail((max_side, max_side))
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=85)
+                data, mime = buf.getvalue(), "image/jpeg"
+    except ImportError:  # Pillow is a serve dependency; keep working without it in tests
+        pass
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
@@ -277,6 +309,23 @@ class LLMClient:
     def model_id(self, role: Role) -> str:
         return self.profile.role(role).model
 
+    def max_output_tokens(self, role: Role) -> int | None:
+        """Largest `max_tokens` the role's pacing allows in one request (its OTPM bucket), or
+        None when the role has no output-token limit. Groq charges the *requested* budget (D-52),
+        so callers cap their request here instead of tripping `PacingError`."""
+        pacing = self.profile.pacing_for(role)
+        return pacing.otpm if pacing and pacing.otpm else None
+
+    def max_input_tokens(self, role: Role, output_budget: int = 0) -> int | None:
+        """Largest input (prompt + images) one request may carry: the role's ITPM gate when the
+        provider has one, else whatever the TPM bucket leaves after the output budget."""
+        pacing = self.profile.pacing_for(role)
+        if pacing is None:
+            return None
+        if pacing.itpm:
+            return pacing.itpm
+        return max(0, pacing.tpm - output_budget)
+
     # -- internals ----------------------------------------------------------------------
 
     @staticmethod
@@ -397,10 +446,12 @@ class LLMClient:
                 raise ProviderNotInstalledError(
                     "pip install -r requirements-future.txt (langchain-anthropic)"
                 ) from exc
+            # No sampling parameters: Claude Sonnet 5 / Opus 5 reject `temperature` (400,
+            # "deprecated for this model"); determinism comes from the prompt contract and the
+            # verifier instead. Thinking / effort settings go through `provider_kwargs`.
             return ChatAnthropic(
                 model=cfg.model,
                 api_key=api_key,
-                temperature=0,
                 max_retries=0,
                 **cfg.provider_kwargs,
             )
@@ -542,8 +593,10 @@ class LLMClient:
         except LLMError:
             raise
         except Exception as exc:
+            status = _status_code(exc)
             raise LLMCallError(
-                f"role={role} model={cfg.model} failed after {attempts_made} attempt(s): "
-                f"{type(exc).__name__}: {exc}"
+                f"role={role} model={cfg.model} failed after {attempts_made} attempt(s)"
+                f"{f' (HTTP {status})' if status else ''}: {type(exc).__name__}: {exc}",
+                status_code=status,
             ) from exc
         raise LLMCallError("unreachable")  # pragma: no cover

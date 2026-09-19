@@ -32,7 +32,15 @@ from rag.core.config import (
 )
 
 MatchKind = Literal[
-    "period", "statement", "formula", "metric", "entity", "direction", "aggregation", "anchor"
+    "period",
+    "statement",
+    "formula",
+    "metric",
+    "entity",
+    "topic",
+    "direction",
+    "aggregation",
+    "anchor",
 ]
 
 _MONTHS = {
@@ -98,7 +106,16 @@ class QuerySlots(BaseModel):
     statement_source: Literal["explicit", "inferred"] | None = None
     direction: Literal["increase", "decrease"] | None = None
     aggregation: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(
+        default_factory=list,
+        description="named subjects that are not line items (glossary `lexicons.topic_terms`)",
+    )
     time_anchor: bool = False
+    ask: str = Field(
+        default="value",
+        description="what the question asks about its slots: value | reason | method | "
+        "location | risk | assumption | person | advice (glossary `lexicons.ask_type`)",
+    )
     normalized_text: str = ""
     canonical_text: str = Field(
         default="", description="normalised text with matched spans canonicalised (L1 key input)"
@@ -152,7 +169,15 @@ class SlotExtractor:
             {"increase": lex.direction.increase, "decrease": lex.direction.decrease}, "direction"
         )
         self._aggregation = self._lexicon(lex.aggregation, "aggregation")
+        self._topics = self._lexicon(lex.topic_terms, "topic")
         self._anchor = self._lexicon({"anchor": lex.time_anchor}, "anchor")
+        # ask-type cues are matched over the whole normalised text (they are not spans that
+        # compete with slots); class order in the glossary is the priority order
+        self._ask = [
+            (name, _phrase_pattern(s))
+            for name, words in lex.ask_type.items()
+            for s in _norm_set(words)
+        ]
         self._years = sorted(self.calendar.fiscal_years)
 
     # -- construction ------------------------------------------------------------------
@@ -227,8 +252,9 @@ class SlotExtractor:
 
         # 2. glossary (statements, formulas, metrics), longest first across all kinds
         scan(self._phrases)
-        # 3. entity
+        # 3. entity, then named topics (longest first, spans consumed like any other slot)
         scan(self._entity)
+        scan(self._topics)
         # 4. lexicons over what is left
         scan(self._direction)
         scan(self._aggregation)
@@ -240,8 +266,10 @@ class SlotExtractor:
         statements = _unique(m.canonical for m in matches if m.kind == "statement")
         directions = _unique(m.canonical for m in matches if m.kind == "direction")
         aggregation = _unique(m.canonical for m in matches if m.kind == "aggregation")
+        topics = _unique(m.canonical for m in matches if m.kind == "topic")
 
         statement, source = self._statement(statements, metrics, formulas)
+        ask = next((name for name, pat in self._ask if pat.search(text)), "value")
         return QuerySlots(
             entity=next((m.canonical for m in matches if m.kind == "entity"), None),
             fiscal_periods=periods,
@@ -253,7 +281,9 @@ class SlotExtractor:
             statement_source=source,
             direction=directions[0] if len(directions) == 1 else None,
             aggregation=aggregation,
+            topics=topics,
             time_anchor=any(m.kind == "anchor" for m in matches),
+            ask=ask,
             normalized_text=text,
             canonical_text=_canonicalize(text, matches),
             matches=matches,

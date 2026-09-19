@@ -36,3 +36,6 @@ docs/*.pdf
 
 # Evaluation run outputs (reports are committed under docs/reports)
 eval/results/
+
+# Coverage artefacts (scripts/coverage_gate.py)
+.coverage*

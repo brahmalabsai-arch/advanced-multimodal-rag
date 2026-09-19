@@ -283,7 +283,7 @@ One `small` call per table summary (on the order of the number of detected table
 **Evaluation and gates**
 - [ ] `eval/run_eval.py`: numeric exact match (value, unit, period), recall@8, and MRR against labelled chunks; always `bypass_cache=true`.
 - [ ] **Embedder gate** (`eval/embedder_gate.py`): run retrieval metrics on both indexes. Lock the winner in config, update D-34/D-47, and write `docs/reports/embedder_gate.md`. Tie-break rule: prefer `bge-small` unless `bge-base` improves recall@8 by ≥ 3 points.
-- [ ] Generator check: `openai/gpt-oss-120b` (default) vs `qwen/qwen3.6-27b` on a 15-question subset; keep the default unless the alternative is clearly better on exact match. (Model ids revised in Phase 0, D-50.)
+- [x] Generator check: `openai/gpt-oss-120b` (default) vs `qwen/qwen3.8-27b` on a 15-question subset; keep the default unless the alternative is clearly better on exact match. (Model ids revised in Phase 0, D-50.) Run in Phase 4 — tied on accuracy, Qwen 60 s/answer under OTPM → default kept (`docs/reports/generator_check.md`).
 
 ### Tests
 - Calculator against golden values: current ratio 3.91, working capital 93,442, quick ratio 3.14, debt-to-equity 0.054, total assets YoY +85.3%, inventories YoY +112.3%.
@@ -358,7 +358,7 @@ Rule-confident queries add 0 calls; others add 1 `small` call.
 
 ### Exit criteria
 - [x] Ablation report committed (`docs/reports/retrieval_ablation.md`); HyDE (D-23) and the reranker (D-24) marked as null / negative results and disabled by default.
-- [ ] No regression on G1–G10 — full golden re-run pending the daily Groq window on `gpt-oss-120b` (retrieval-only: recall@8 0.73 → 0.95 on the same 46 questions, P4/P13/C5/C8/G7/G8/G10/T5/T7 fixed).
+- [x] No regression on G1–G10 — full golden re-run through the Phase 4 pipeline: `docs/reports/golden_phase4_claude.md` (48/48 answered, numeric exact match 100% of 35, keyword coverage 100%, calculator agreement 100%; generator `claude-sonnet-5` because the Groq daily window could not carry the run — D-45 note). The partial Groq run `golden_phase4` (34/48, all exact but C5) agrees.
 - [x] `OUT_OF_SCOPE` handled without retrieval (G14, O2 and paraphrases; test `test_out_of_scope_is_refused_without_retrieval_or_model_calls`).
 - [x] Debug panel shows slots, scope decision, expansion queries with filters, and the rerank gate decision for every query.
 
@@ -376,28 +376,28 @@ Retrieval-only on the 46 in-scope golden questions: dense 0.52 → +BM25 0.73 �
 ### Tasks
 
 **Features and decisions**
-- [ ] `compress/features.py`: all features in §6.3; `relevance_density` uses the sentence sidecars from Phase 2.
-- [ ] `compress/classifier.py`:
+- [x] `compress/features.py`: all features in §6.3; `relevance_density` uses the sentence sidecars from Phase 2 (`sentence_relevance_tau` calibrated to 0.62 — a weak signal on bge-small, §6.8a).
+- [x] `compress/classifier.py`:
   - Stage A rules R0–R6.
   - Stage B score.
   - `break_even()` in quota mode (`min_reduction_for_llm`), with the price mode present for future profiles.
   - Output `CompressionDecision` with a reason per chunk.
 
 **Compressors**
-- [ ] `compress/compressors.py`:
-  - `DEDUPE` — embedding cosine ≥ 0.95, merged citations.
+- [x] `compress/compressors.py`:
+  - `DEDUPE` — embedding cosine ≥ 0.95, merged citations (narrative chunks only — row facts of one statement embed within 0.95 of each other, §6.8a).
   - `ROW_SELECT` — header + query metrics + section total rows.
   - `EXTRACT_LIGHT` — sidecar sentence selection ± 1 neighbour.
   - `EXTRACT_LLM` — `small` role, verbatim sentence copy.
-- [ ] `compress/fidelity.py`: every number in compressed text must appear verbatim in the source chunk; otherwise revert to the original chunk and log a violation.
+- [x] `compress/fidelity.py`: every number in compressed text must appear verbatim in the source chunk; otherwise revert to the original chunk and log a violation.
 
 **Wiring and logging**
-- [ ] Graph: `compression_classifier → compressors` between rerank and assemble; the context budget now fills after compression instead of by truncation.
-- [ ] Log feature vectors, decisions, and outcomes to `data/logs/compression_decisions.jsonl` (training data for Stage C in Phase 7).
-- [ ] Debug panel v3: per-chunk action and reason, tokens before and after, fidelity guard result.
+- [x] Graph: `compression_classifier → compressors` between rerank and assemble; the context budget now fills after compression instead of by truncation.
+- [x] Log feature vectors, decisions, and outcomes to `data/logs/compression_decisions.jsonl` (training data for Stage C in Phase 7).
+- [x] Debug panel v3: per-chunk action and reason, tokens before and after, fidelity guard result.
 
 **Evidence**
-- [ ] `eval/compression_ablation.py`: `never_compress` vs `always_compress` vs `classifier_gated` → accuracy, tokens, Groq calls, latency, violations → `docs/reports/compression_ablation.md`.
+- [x] `eval/compression_ablation.py`: `never_compress` vs `always_compress` vs `classifier_gated` → accuracy, tokens, Groq calls, latency, violations → `docs/reports/compression_ablation.md`.
 
 ### Tests
 - Table-driven rule tests: tables and row facts never reach `EXTRACT_LLM`; contexts under the skip budget make no compressor calls.
@@ -409,9 +409,9 @@ Retrieval-only on the 46 in-scope golden questions: dense 0.52 → +BM25 0.73 �
 `EXTRACT_LLM` calls only when gated; the ablation's `always_compress` arm is the expensive one, so run it on a subset of about 20 questions.
 
 ### Exit criteria
-- [ ] Zero fidelity violations reaching generation across the golden set.
-- [ ] `classifier_gated` accuracy ≥ `never_compress` accuracy, with fewer large-model input tokens; otherwise, document why and adjust thresholds.
-- [ ] Decision log file populated for Phase 7 training.
+- [x] Zero fidelity violations reaching generation across the golden set (guard reverts before generation; see `docs/reports/compression_ablation.md`).
+- [x] `classifier_gated` accuracy ≥ `never_compress` accuracy, with fewer large-model input tokens; otherwise, document why and adjust thresholds — see the ablation report's reading.
+- [x] Decision log file populated for Phase 7 training (`data/logs/compression_decisions.jsonl`, one line per request with features, decisions, applied actions and outcome).
 
 ---
 
@@ -424,31 +424,33 @@ Retrieval-only on the 46 in-scope golden questions: dense 0.52 → +BM25 0.73 �
 ### Tasks
 
 **Foundations**
-- [ ] `core/clock.py`: single `now()` used by TTL, LFU decay, sweeper, and time-anchored rules; the dev offset applies only when `APP_ENV=dev`. Replace any direct time calls in the codebase.
-- [ ] `cache/versions.py`: `corpus_version` (from manifest), `prompt_version` (hash of prompt templates), `generator_model`, `retrieval_config_hash` (thresholds + embedder + reranker + glossary hash), `calculator_version` (formulas hash).
+- [x] `core/clock.py`: single `now()` used by TTL, LFU decay, sweeper, and time-anchored rules; the dev offset applies only when `APP_ENV=dev`. *Built:* `Clock(allow_offset, max_offset_days)`; log `ts` fields deliberately stay on the wall clock (they record when something happened) with `clock_offset_s` in every trace (§14.3 as built).
+- [x] `cache/versions.py`: `corpus_version` (from manifest), `prompt_version` (hash of prompt templates), `generator_model`, `retrieval_config_hash` (thresholds + embedder + reranker + glossary hash), `calculator_version` (formulas hash). *Built:* hashes over parsed YAML (comment edits do not flush); `generator_model` = large + vision ids.
 
 **Tiers**
-- [ ] `cache/l1.py`: `cachetools.TTLCache` (512 entries, ≤ 1 h, LRU) keyed by the normalized query + version keys.
-- [ ] `cache/l2.py`: Chroma `semantic_cache` in `data/cache/chroma` using the §5.11 schema; lookup with the slot guard `where` clause and thresholds 0.90 / 0.95; promote hits to L1.
-- [ ] `cache/ttl.py`: TTL classes (30 d / 7 d / 1 d / 1 d / not cached); time-anchored expiry shortened to the referenced event date when that event is still in the future.
-- [ ] `cache/admission.py`: the five admission rules (§5.6).
-- [ ] `cache/lfu.py`: Redis-style counter (`LFU_INIT_VAL` 5, log factor 10, 1-day decay), `on_hit`, `decayed`, `make_room` with tie → soonest expiry. Verify constants against current Redis documentation and note the check in D-30.
-- [ ] `cache/sweeper.py`: on startup and every 15 minutes (FastAPI lifespan background task), delete expired and version-mismatched entries.
+- [x] `cache/l1.py`: `cachetools.TTLCache` (512 entries, ≤ 1 h, LRU) keyed by the normalized query + version keys (per-entry `min(class TTL, 1 h)` checked lazily).
+- [x] `cache/l2.py`: Chroma `semantic_cache` in `data/cache/chroma` using the §5.11 schema; lookup with the slot guard `where` clause; promote hits to L1. *Built:* guard extended to seven keys, thresholds calibrated to 0.85 / 0.90, canonical embedded text (D-59); exact cosine over the filtered set (as D-54).
+- [x] `cache/ttl.py`: TTL classes (30 d / 7 d / 1 d / 1 d / not cached); time-anchored expiry shortened to the referenced event date when that event is still in the future (dates parsed from the answer text).
+- [x] `cache/admission.py`: the five admission rules (§5.6); refusals L1-only; rule 4 is a follow-up heuristic (v2 hook).
+- [x] `cache/lfu.py`: Redis-style counter (`LFU_INIT_VAL` 5, log factor 10, 1-day decay), `on_hit`, `decayed`, `make_room` with tie → soonest expiry. Constants verified against redis.io / `redis.conf` on 2026-09-18 and noted in D-30.
+- [x] `cache/sweeper.py`: on startup and every 15 minutes (FastAPI lifespan background task), delete expired entries. *Deviation (D-59):* version-mismatched entries are counted, evicted first under capacity pressure and removable with `purge stale`, but not deleted on sight — walkthrough step 7 needs them to survive a config revert.
 
 **Wiring and API**
-- [ ] Graph: cache lookup nodes before scope gate; cache write after verify; the `bypass_cache` flag honoured end-to-end.
-- [ ] `api/routes_admin.py` (dev mode):
+- [x] Graph: `cache_lookup` after `slots` (needs the L1 key and guard) and before the scope gate; `cache_write` after verify and for scoped refusals; `bypass_cache` skips both.
+- [x] `api/routes_admin.py` (dev mode; 404 outside `dev_clock.enabled_in`) — plus `POST /api/admin/cache/sweep` and purge scopes `stale` / `l1`:
   - `GET /api/admin/cache/stats` (tier counts, hit rates, entries by TTL class).
   - `GET /api/admin/cache/entries` (paged, with slots, `expires_at`, `lfu_counter`).
   - `POST /api/admin/cache/purge` (all / class / slot).
   - `POST /api/admin/clock` (`offset_seconds`; reset).
 
 **Frontend and calibration**
-- [ ] Cache panel in the UI: tier badge, similarity, TTL class, `expires_at`, `lfu_counter`, hit count, bypass toggle, purge button, clock buttons (+1d, +7d, +30d, reset) with the current offset visibly displayed.
-- [ ] `eval/adversarial_cache_pairs.jsonl` (≥ 200: period swaps, metric swaps, direction swaps, negations) and `eval/paraphrase_pairs.jsonl`.
-- [ ] Threshold calibration script → confirm or adjust 0.90 / 0.95 → `docs/reports/cache_threshold_calibration.md`.
+- [x] Cache panel in the UI (v4): tier badge, similarity / threshold, TTL class, `expires_at`, `lfu_counter`, hit count, admission outcome on a miss, bypass toggle, purge / sweep buttons, entries table, clock buttons (+1d, +7d, +30d, reset) with the current offset highlighted.
+- [x] `eval/adversarial_cache_pairs.jsonl` (286: period swaps 66, metric swaps 66, direction swaps 72, negations 32, same-slot other-question 50) and `eval/paraphrase_pairs.jsonl` (52), generated by `eval/build_cache_pairs.py`.
+- [x] Threshold calibration script (`eval/cache_threshold_calibration.py`) → adjusted to 0.85 / 0.90 with canonical embedded text and three extra guard keys → `docs/reports/cache_threshold_calibration.md` (D-59).
 
 ### Cache walkthrough (manual, in the browser; also scripted as `scripts/cache_walkthrough.py`)
+
+Scripted result: `docs/reports/cache_walkthrough.md` — 10/10 on the `anthropic` profile; steps 1–6 also passed on `groq_build` before the day's token window ran out (steps 7–9 then returned degraded answers, correctly not admitted).
 
 | Step | Action | Expected |
 |---|---|---|
@@ -475,9 +477,9 @@ Retrieval-only on the 46 in-scope golden questions: dense 0.52 → +BM25 0.73 �
 Cache hits cost zero calls; the walkthrough costs about 6 full-pipeline runs.
 
 ### Exit criteria
-- [ ] False-hit rate ≤ 1% on the adversarial set (NFR-3).
-- [ ] All 10 walkthrough steps behave as expected, scripted and in the browser.
-- [ ] Cache hit p50 < 300 ms on localhost (NFR-5).
+- [x] False-hit rate ≤ 1% on the adversarial set (NFR-3) — 0.0 % on 286 pairs (`docs/reports/cache_threshold_calibration.md`).
+- [x] All 10 walkthrough steps behave as expected, scripted (`docs/reports/cache_walkthrough.md`); the browser pass was not repeated by hand.
+- [x] Cache hit p50 < 300 ms on localhost (NFR-5) — L1 6–12 ms, L2 29–40 ms in the walkthrough.
 
 ---
 
@@ -490,37 +492,40 @@ Cache hits cost zero calls; the walkthrough costs about 6 full-pipeline runs.
 ### Tasks
 
 **Cache-policy benchmark**
-- [ ] `eval/cache_benchmark.py`:
-  - Synthetic 5,000-query log (Zipf s ≈ 1.1, three bursts, ~20% long tail) on a simulated clock.
-  - Policies: Redis-style LFU + TTL (chosen) vs LRU + TTL, LFU without decay, `volatile-ttl`, FIFO, MRU, Random, TTL-only.
-  - Capacities 100 / 500 / 1,000.
-  - Apply the promotion rule (D-32) → `docs/reports/cache_policy_benchmark.md`.
+- [x] `eval/cache_benchmark.py`:
+  - [x] Synthetic query log on a simulated clock: 5,230 queries over 746 identities, Zipf s ≈ 1.1, three bursts. *Deviation:* the one-off tail is 630 questions (12 %, not 20 %) — that is every distinct one-off a single-company corpus affords; the script reports the cap rather than looping (a bug the first draft had).
+  - [x] Policies: Redis-style LFU + TTL (chosen), LRU + TTL, LFU without decay, `volatile-ttl`, FIFO, MRU, Random, TTL-only — plus `lru_no_ttl`, added so the stale-hit column is not zero by construction.
+  - [x] Capacities 100 / 500 / 1,000, **plus 25 and 50**: the working set is smaller than 500, so at 500 and 1,000 every policy is identical and there is nothing to compare (reported as the "eviction is inert at demo scale" measurement).
+  - [x] Promotion rule (D-32) applied → `docs/reports/cache_policy_benchmark.md`. Chosen policy stands; LRU beats it by 5.5 pp at capacity 25 only.
+  - [x] The benchmark also caught two real guard defects, fixed and re-measured (D-60): annual-meeting vs record-date, and "where is X disclosed" served X's value.
 
 **Classifier and quality**
-- [ ] `eval/train_classifier.py`:
-  - Build labels from Phase 5 decision logs with forced on/off runs on the dev set.
-  - Train logistic regression and gradient boosting.
-  - Export logistic weights to `compress/classifier_weights.json`.
-  - Switch Stage B to the NumPy scorer behind a config flag.
-  - Re-run the compression ablation (rules vs learned).
-- [ ] RAGAS on a golden subset (faithfulness, answer relevancy, context precision/recall) with a Groq judge; label results "indicative, same-family judge" → `docs/reports/ragas_groq.md`.
+- [x] `eval/train_classifier.py`:
+  - [x] Labels from the decision log joined to a forced `--compression always` run over the golden set (`stagec_always`) against the no-compression run: 54 chunk decisions, 46 positive.
+  - [x] Logistic regression and gradient boosting under repeated stratified CV, with a bootstrap CI and an "always compress" base-rate row.
+  - [x] Logistic weights exported to `src/rag/compress/classifier_weights.json`.
+  - [x] Stage B switched behind `compression.stage_b: rules | learned`; the NumPy scorer matches scikit-learn to 1e-9 (`tests/test_eval_harness.py`).
+  - [x] Rules vs learned compared on the same labels (precision 0.881 vs 0.919, base rate 0.852). **Not adopted** (D-61): 8 negative labels cannot separate the model from the base rate, so the generation-level ablation was not re-run — it would measure a policy the project is not shipping.
+- [x] RAGAS-style metrics on a 16-question golden subset (faithfulness, answer relevancy, context precision/recall), labelled "indicative, same-family judge" → `docs/reports/ragas_groq.md` (Groq judge, 4 questions before the 200K-token daily window closed) and `docs/reports/ragas_claude.md` (the full subset). *Deviation (D-62):* the `ragas` package cannot be imported in this environment — it imports `langchain_community.chat_models.vertexai`, removed from the sunset `langchain-community` 0.4.2 — so the four metric definitions are implemented against the project's own `LLMClient`.
 
 **Operations**
-- [ ] Ops panel in the UI via `GET /api/admin/stats`: hit rate over time, Groq tokens by role, rate-limit waits, verification failures, compression decision mix, `rss_mb`.
-- [ ] Local resource profile: 50 mixed queries → peak RSS, startup time, p50/p95 latency per node → `docs/reports/local_resource_profile.md` (input for the future deployment decision).
-- [ ] Fill the NFR results table in `docs/reports/nfr_results.md`.
+- [x] Ops panel in the UI via `GET /api/admin/stats` (`src/rag/api/ops.py`): cache hit rate over time as a sparkline, tokens and calls by role with pacing waits and retries, verification failures with their issues, compression decision mix and tokens saved, per-node latency percentiles, `rss_mb`.
+- [x] Local resource profile: 50 mixed queries (60 % fresh → cache misses, 40 % repeats → hits) → startup stages, peak RSS, p50/p95 per node → `docs/reports/local_resource_profile.md` (`eval/resource_profile.py`).
+- [x] NFR results table generated from the evidence on disk (`eval/nfr_results.py`) → `docs/reports/nfr_results.md`.
 
-### Tests
-- Benchmark harness reproducibility: same seed → identical metrics.
-- NumPy scorer matches scikit-learn predictions on a held-out set.
+### Tests (`tests/test_eval_harness.py`)
+- [x] Benchmark harness reproducibility: same seed → identical metrics, for every policy; the query log is byte-identical per seed and burst windows hold.
+- [x] NumPy scorer matches scikit-learn predictions (max |Δp| < 1e-9), the feature order is asserted against the trainer's, and a reordered weights file is rejected.
+- [x] Simulation invariants (hits + misses = queries, correct + false = hits, a TTL-respecting policy never serves an expired entry) and the promotion rule's two-capacity requirement.
+- [x] Ops aggregation over synthetic logs, including a half-written JSONL tail.
 
 ### Groq usage
 The benchmark uses no LLM calls (simulated). RAGAS and retraining runs are the main cost; use subsets and pace them.
 
 ### Exit criteria
-- [ ] All reports exist in `docs/reports/`.
-- [ ] Cache-policy decision confirmed or changed per the promotion rule, with D-30/D-32 updated.
-- [ ] Stage C either adopted (if it beats Stage B) or documented as not adopted.
+- [x] All reports exist in `docs/reports/`: `cache_policy_benchmark.md`, `stage_c_classifier.md`, `ragas_groq.md`, `ragas_claude.md`, `local_resource_profile.md`, `nfr_results.md`.
+- [x] Cache-policy decision confirmed per the promotion rule; D-32 accepted and D-30 annotated with the capacity-25 LRU result.
+- [x] Stage C documented as **not adopted**, with the four adoption conditions and the one that failed (D-61).
 
 ---
 
@@ -533,36 +538,39 @@ The benchmark uses no LLM calls (simulated). RAGAS and retraining runs are the m
 ### Tasks
 
 **Robustness**
-- [ ] Degrade modes:
-  - Groq 429 after retries → serve from cache if possible, else return a retrieval-only view (top cited chunks) with a clear message.
-  - Vision model unavailable → description + companion table answer.
-- [ ] Input limits: maximum question length; reject empty or binary input; request timeout.
-- [ ] Startup checks: index manifest present and `corpus_version` consistent; bind address is `127.0.0.1`; admin and clock routes disabled outside dev mode.
+- [x] Degrade modes:
+  - Groq 429 after retries → serve from cache if possible, else return a retrieval-only view (top cited chunks) with a clear message. *Built as an in-graph path (D-63): `generate` returns `degraded_answer` with citations, `degraded: true`, never admitted; the cache lookup before generation is the "serve from cache" part.*
+  - Vision model unavailable → description + companion table answer. *D-55, unit-tested in `test_hardening.py`.*
+- [x] Input limits: maximum question length; reject empty or binary input; request timeout. *`validate_question` (422) + `asyncio.wait_for` (504); limits in `app.yaml` and reported by `/readyz`.*
+- [x] Startup checks: index manifest present and `corpus_version` consistent; bind address is `127.0.0.1`; admin and clock routes disabled outside dev mode. *`api/checks.py`; fatal checks leave the pipeline unloaded; plus a 403 guard for routable peer addresses (D-64).*
 
 **Security and quality**
-- [ ] Log hygiene: redaction test for API keys; no full prompts containing secrets.
-- [ ] Coverage for deterministic modules (slots, calculator, fidelity, cache guard, LFU, classifier rules) ≥ 90%.
+- [x] Log hygiene: redaction test for API keys; no full prompts containing secrets. *`test_logging_redaction.py` + Phase 8 tests: model-error messages redacted, ledger/trace schemas carry no prompt fields, `.env` gitignored.*
+- [x] Coverage for deterministic modules (slots, calculator, fidelity, cache guard, LFU, classifier rules) ≥ 90%. *`scripts/coverage_gate.py`: 12 modules, lowest 92.9 %, overall 97.1 % — `docs/reports/coverage_phase8.md`.*
 
 **Model-swap readiness**
-- [ ] `scripts/check_profile.py --profile anthropic --dry-run` (and `gemini`): validates config and resolves roles, with no network calls.
-- [ ] Write the F1 switch checklist into the README.
+- [x] `scripts/check_profile.py --profile anthropic --dry-run` (and `gemini`): validates config and resolves roles, with no network calls. *All four profiles pass — `docs/reports/model_swap_dry_run.md` (D-65).*
+- [x] Write the F1 switch checklist into the README.
 
 **Documentation and release**
-- [ ] README:
+- [x] README:
   - Overview diagram.
   - Localhost runbook.
   - How to run the cache walkthrough.
   - Component-by-component reasoning linked to the decision log.
   - Links to all reports.
-- [ ] Update `architecture.md` and `problemstatement.md` statuses (Proposed → Accepted or Revised based on evidence).
-- [ ] Fresh-clone rehearsal: new directory → setup → ingest → serve → ask G1 and run the cache walkthrough, following the README only.
-- [ ] Tag the release `v1.0-backend`.
+- [x] Update `architecture.md` and `problemstatement.md` statuses (Proposed → Accepted or Revised based on evidence). *architecture v0.4: no decision left Proposed; D-63–D-65 added.*
+- [x] Fresh-clone rehearsal: new directory → setup → ingest → serve → ask G1 and run the cache walkthrough, following the README only. *Pass on the second pass — the first found two defects (cp1252 console crash in every CLI script; a test assuming the F1 packages), both fixed: `docs/reports/fresh_clone_rehearsal.md`. Same `corpus_version` as the build machine.*
+- [ ] Tag the release `v1.0-backend`. *After the post-Phase-8 commit (user instruction of 2026-09-18).*
 
 ### Exit criteria — backend-complete gate
-- [ ] Fresh-clone rehearsal succeeds.
-- [ ] All phase exit criteria met, or deviations documented with root cause.
-- [ ] Dry-run checks pass for the `anthropic` and `gemini` templates.
-- [ ] Deferred-decision list (architecture §14.4) reviewed and ready for discussion.
+- [x] Fresh-clone rehearsal succeeds. *`docs/reports/fresh_clone_rehearsal.md` (pass; 2 defects found and fixed).*
+- [x] All phase exit criteria met, or deviations documented with root cause. *Deviations: D-23/D-24 null and negative results (kept off), D-45 evaluation runs on the `anthropic` profile, D-61 Stage C not adopted, D-62 in-repo RAGAS metrics; Groq golden re-run partial (34/48, `eval/run_eval.py --name golden_phase4 --resume` completes it) — each recorded in the decision log and the phase outcome notes above.*
+- [x] Dry-run checks pass for the `anthropic` and `gemini` templates. *`model_swap_dry_run.md`.*
+- [x] Deferred-decision list (architecture §14.4) reviewed and ready for discussion. *README → Deferred decisions; architecture §14.4.*
+
+### Outcome (2026-09-19)
+Robustness: model failures degrade inside the graph to a cited retrieval-only view (never cached, latencies kept); input validation (422) and a request timeout (504); startup checks (`bind`, `admin`, `secrets`, `index`) reported by `/readyz`, a loopback guard (403). Quality: 12 deterministic modules at 92.9–100 % coverage (97.1 % overall) behind `make coverage`; 473 tests, ~45 s, no network. Model swap: all four profiles pass the dry run; the run found that LangChain forwards unknown `provider_kwargs` silently, which the script now flags. Documentation: README rewritten around the runbook, the component table and the 19 reports; architecture v0.4 with every decision status set from evidence. Groq usage for the phase: the fresh-clone ingestion only (enrichment, separate `small`/`vision` daily buckets) plus the rehearsal's G1 and walkthrough calls; no new evaluation runs.
 
 ---
 

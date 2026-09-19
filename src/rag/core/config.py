@@ -71,6 +71,11 @@ class Pacing(BaseModel):
         gt=0,
         description="output tokens per minute; Groq charges the *requested* max_tokens against it",
     )
+    itpm: int | None = Field(
+        default=None,
+        gt=0,
+        description="input tokens per minute; Groq rejects (413) a single request above it",
+    )
     rpd: int | None = Field(default=None, gt=0, description="requests per day (informational)")
     tpd: int | None = Field(default=None, gt=0, description="tokens per day (informational)")
 
@@ -154,6 +159,10 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     workers: int = Field(default=1, ge=1)
+    # Phase 8 input limits: a question longer than this is rejected (422); a request that
+    # outlives the timeout answers 504 (the worker thread finishes in the background).
+    max_question_chars: int = Field(default=1000, ge=16, le=20000)
+    request_timeout_seconds: float = Field(default=120.0, gt=0)
 
 
 class DevClockConfig(BaseModel):
@@ -235,12 +244,16 @@ class StageBThresholds(BaseModel):
 class CompressionThresholds(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    enabled: bool = True
+    mode: Literal["classifier", "never", "always"] = "classifier"
     skip_budget_tokens: int = Field(gt=0)
+    narrative_pressure_ratio: float = Field(default=0.5, ge=0)
     dedupe_cosine: float = Field(ge=0, le=1)
     sentence_relevance_tau: float = Field(ge=0, le=1)
     numeric_density_cap: float = Field(ge=0, le=1)
     min_reduction_for_llm: float = Field(ge=0, le=1)
     stage_b_thresholds: StageBThresholds
+    stage_b: Literal["rules", "learned"] = "rules"
 
 
 class L1Config(BaseModel):
@@ -283,11 +296,13 @@ class L2Config(BaseModel):
     similarity: SimilarityThresholds
     ttl_seconds: TTLSeconds
     eviction: EvictionConfig
+    embed_text: Literal["raw", "normalized", "canonical"] = "canonical"
 
 
 class CacheThresholds(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    enabled: bool = True
     l1: L1Config
     l2: L2Config
     sweep_interval_seconds: int = Field(gt=0)
@@ -429,6 +444,8 @@ class Lexicons(BaseModel):
     direction: DirectionLexicon
     aggregation: dict[str, list[str]]
     time_anchor: list[str]
+    ask_type: dict[str, list[str]] = Field(default_factory=dict)
+    topic_terms: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class GlossaryConfig(BaseModel):

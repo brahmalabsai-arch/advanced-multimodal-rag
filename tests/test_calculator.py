@@ -188,3 +188,39 @@ def test_result_block_is_verbatim_usable(calc: Calculator) -> None:
     block = result.as_context_block("K1")
     assert "3.91" in block and "125,605" in block and "32,163" in block
     assert "rowfact_p141_total_current_assets" in block
+
+
+# ------------------------------------------------------------ Phase 8: edge cases
+
+
+def test_expression_evaluator_rejects_bad_syntax_and_unknowns() -> None:
+    with pytest.raises(ValueError, match="bad expression"):
+        evaluate_expression("a +", {"a": 1})
+    with pytest.raises(ValueError, match="unknown variable"):
+        evaluate_expression("a + b", {"a": 1})
+    with pytest.raises(ValueError, match="keyword arguments"):
+        evaluate_expression("max(a, key=1)", {"a": 1})
+    with pytest.raises(ValueError, match="disallowed"):
+        evaluate_expression("'x' * 3", {})
+    assert evaluate_expression("-a + min(b, c)", {"a": 1, "b": 5, "c": 2}) == 1.0
+
+
+def test_formatted_values_by_kind(calc: Calculator) -> None:
+    assert calc.compute("working_capital", fiscal_year=2026).formatted() == "$93,442 million"
+    assert calc.compute("current_ratio", fiscal_year=2026).formatted() == "3.91"
+    pct = calc.compute("yoy_change_pct", fiscal_year=2026, metric="goodwill")
+    assert pct.status == "ok" and pct.formatted().startswith("+") and pct.formatted().endswith("%")
+    neg = calc.compute("yoy_change_abs", fiscal_year=2026, metric="short term debt")
+    # FY2025 short-term debt is nil → the input is missing, never treated as zero
+    assert neg.status == "missing_inputs" and neg.formatted() == "n/a"
+    assert "STATUS: missing_inputs" in neg.as_context_block("K2")
+
+
+def test_division_by_zero_is_an_error_not_a_crash() -> None:
+    zero = [c for c in _rowfacts()]
+    for c in zero:
+        if c.metadata.line_item_norm == "total current liabilities":
+            c.metadata.value_fy2026 = 0.0
+    result = Calculator(RowFactSource(zero)).compute("current_ratio", fiscal_year=2026)
+    assert result.status == "error" and "could not evaluate" in result.message
+    assert result.rounded is None

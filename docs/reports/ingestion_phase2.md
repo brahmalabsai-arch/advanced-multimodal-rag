@@ -1,6 +1,6 @@
 # Ingestion report — Phase 2 (chunk, enrich, index)
 
-Generated 2026-09-17T16:24:25+00:00 · chunks: text 447, table 143, row_fact 83, figure 16 (total 689) · sentences 3541 · text blocks 476 · split threshold p90 = 0.4839
+Generated 2026-09-18T12:22:17+00:00 · chunks: text 447, table 143, row_fact 83, figure 16 (total 689) · sentences 3541 · text blocks 476 · split threshold p90 = 0.4839
 
 ## Indexes
 
@@ -11,12 +11,12 @@ Generated 2026-09-17T16:24:25+00:00 · chunks: text 447, table 143, row_fact 83,
 
 ## Enrichment (Groq, cached)
 
-Models: {'table_summaries': 'openai/gpt-oss-20b', 'figures': 'qwen/qwen3.8-27b'} · cache hits 141 / misses 2 on the last run · figures dropped: {'logo': 5, 'photo': 15, 'duplicate': 2, 'decorative': 2, 'unannotated': 2}
+Models: {'table_summaries': 'openai/gpt-oss-20b', 'figures': 'qwen/qwen3.8-27b'} · cache hits 141 / misses 2 on the last run · figures dropped: {'logo': 6, 'photo': 16, 'duplicate': 2, 'decorative': 2}
 
 | Ledger job | Calls | ok | Tokens in | Tokens out |
 |---|---|---|---|---|
 | ingest-tables | 100 | 100 | 55352 | 6909 |
-| ingest-figures | 53 | 37 | 76672 | 7779 |
+| ingest-figures | 55 | 39 | 80711 | 7981 |
 
 ## Figure classification
 

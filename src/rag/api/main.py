@@ -2,13 +2,19 @@
 
     make serve   →   uvicorn rag.api.main:app --host 127.0.0.1 --port 8000 --workers 1
 
-Startup loads the index and the model client once (lifespan). `/readyz` reports whether both
-are loaded. The server is meant for 127.0.0.1 only; the bind address is asserted at startup
-(NFR-12). Admin and dev-clock routes arrive in Phase 6 and are enabled only in dev mode.
+Startup runs the Phase 8 checks (`checks.py`: bind address, admin gating, provider keys, index
+manifest consistency), then loads the index and the model client once (lifespan). A fatal check
+— a non-loopback bind or an inconsistent index — leaves the pipeline unloaded, `/readyz` answers
+503 with the failing check, and `/api/ask` answers 503. The server is meant for 127.0.0.1 only
+(NFR-12): a request from a routable peer address is refused with 403. Admin and dev-clock routes
+(`routes_admin.py`, Phase 6) answer 404 unless `app.yaml` puts the environment in
+`dev_clock.enabled_in`; the cache sweeper runs on startup and every
+`cache.sweep_interval_seconds` as a lifespan background task (§5.5).
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,8 +25,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from rag import __version__
+from rag.api.checks import CheckResult, fatal_failures, is_loopback_client, run_startup_checks
+from rag.api.routes_admin import router as admin_router
 from rag.api.routes_ask import router as ask_router
-from rag.core.config import load_app_config
+from rag.core.config import load_app_config, load_models_config, load_thresholds_config
 from rag.core.logging import configure_logging, get_logger
 from rag.core.settings import PROJECT_ROOT, SettingsError, get_settings
 
@@ -37,6 +45,25 @@ def _load_pipeline(app: FastAPI) -> None:
     log.info("Pipeline ready in %.1fs", app.state.startup_seconds)
 
 
+def _run_checks(app: FastAPI) -> list[CheckResult]:
+    """Startup checks (Phase 8). Config errors are reported as a failed check, not a crash."""
+    settings = app.state.settings
+    try:
+        results = run_startup_checks(
+            settings,
+            app.state.app_config,
+            load_models_config(settings=settings),
+            load_thresholds_config(settings=settings),
+        )
+    except (SettingsError, ValueError, OSError) as exc:
+        results = [CheckResult("config", False, str(exc)[:300], fatal=True)]
+    for r in results:
+        (log.info if r.ok else (log.error if r.fatal else log.warning))(
+            "startup check %-7s %s  %s", r.name, "ok" if r.ok else "FAIL", r.detail
+        )
+    return results
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -48,16 +75,35 @@ async def lifespan(app: FastAPI):
     app.state.pipeline = None
     app.state.load_error = None
     app.state.startup_seconds = None
-    if app_cfg.server.host not in {"127.0.0.1", "localhost"}:
-        log.warning(
-            "app.yaml binds to %s — this build is localhost-only (D-44)", app_cfg.server.host
+    app.state.admin_enabled = app_cfg.dev_clock_enabled
+    app.state.checks = _run_checks(app)
+    sweep_task: asyncio.Task | None = None
+    fatal = fatal_failures(app.state.checks)
+    if fatal:
+        app.state.load_error = "startup check failed: " + "; ".join(
+            f"{r.name}: {r.detail}" for r in fatal
+        )
+        log.error("Refusing to load the pipeline — %s", app.state.load_error)
+    else:
+        try:
+            _load_pipeline(app)
+        except (SettingsError, FileNotFoundError, OSError) as exc:
+            app.state.load_error = str(exc)
+            log.error("Pipeline failed to load: %s", exc)
+    pipeline = app.state.pipeline
+    if pipeline is not None and pipeline.cache_enabled:
+        try:
+            log.info("cache sweep on startup: %s", pipeline.cache.sweeper.sweep())
+        except Exception as exc:  # housekeeping must never block startup
+            log.warning("startup cache sweep failed: %s", exc)
+        sweep_task = asyncio.create_task(
+            pipeline.cache.sweeper.run_forever(pipeline.thresholds.cache.sweep_interval_seconds)
         )
     try:
-        _load_pipeline(app)
-    except (SettingsError, FileNotFoundError, OSError) as exc:
-        app.state.load_error = str(exc)
-        log.error("Pipeline failed to load: %s", exc)
-    yield
+        yield
+    finally:
+        if sweep_task is not None:
+            sweep_task.cancel()
 
 
 app = FastAPI(
@@ -66,6 +112,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(ask_router)
+app.include_router(admin_router)
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
@@ -75,14 +122,34 @@ def healthz() -> dict[str, Any]:
     return {"status": "ok", "version": __version__}
 
 
+@app.middleware("http")
+async def _localhost_only(request, call_next):  # noqa: ANN001
+    """Two request-time guards (NFR-12): only loopback peers are served, and admin routes
+    exist in the app but answer 404 unless the environment enables them."""
+    peer = request.client.host if request.client else None
+    if not is_loopback_client(peer):
+        return JSONResponse(
+            status_code=403, content={"detail": "this server answers localhost only (D-44)"}
+        )
+    if request.url.path.startswith("/api/admin") and not getattr(app.state, "admin_enabled", False):
+        return JSONResponse(status_code=404, content={"detail": "admin routes are dev-only"})
+    return await call_next(request)
+
+
 @app.get("/readyz")
 def readyz() -> JSONResponse:
     pipeline = getattr(app.state, "pipeline", None)
+    checks = [c.as_dict() for c in getattr(app.state, "checks", [])]
     if pipeline is None:
         return JSONResponse(
             status_code=503,
-            content={"ready": False, "error": getattr(app.state, "load_error", None)},
+            content={
+                "ready": False,
+                "error": getattr(app.state, "load_error", None),
+                "checks": checks,
+            },
         )
+    server = app.state.app_config.server
     return JSONResponse(
         content={
             "ready": True,
@@ -91,6 +158,14 @@ def readyz() -> JSONResponse:
             "embedder": pipeline.store.manifest.embedder,
             "model_profile": pipeline.models.active_profile,
             "startup_seconds": app.state.startup_seconds,
+            "cache_enabled": pipeline.cache_enabled,
+            "admin_enabled": getattr(app.state, "admin_enabled", False),
+            "clock_offset_s": pipeline.clock.offset_s,
+            "limits": {
+                "max_question_chars": server.max_question_chars,
+                "request_timeout_seconds": server.request_timeout_seconds,
+            },
+            "checks": checks,
         }
     )
 

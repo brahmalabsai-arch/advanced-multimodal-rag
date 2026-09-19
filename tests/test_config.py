@@ -25,8 +25,9 @@ from rag.core.settings import PROJECT_ROOT, Settings
 CONFIG_DIR = PROJECT_ROOT / "config"
 
 
-def test_all_three_profiles_validate(models_config: ModelsConfig) -> None:
-    assert set(models_config.profiles) == {"groq_build", "anthropic", "gemini"}
+def test_all_profiles_validate(models_config: ModelsConfig) -> None:
+    # groq_qwen_large exists only for the Phase 4 generator check (never served).
+    assert set(models_config.profiles) == {"groq_build", "groq_qwen_large", "anthropic", "gemini"}
     for name, profile in models_config.profiles.items():
         for role in ROLES:
             assert profile.role(role).model, f"{name}.{role} has no model id"
@@ -110,10 +111,11 @@ def test_thresholds_config_matches_architecture_11_1(settings: Settings) -> None
     assert isinstance(t, ThresholdsConfig)
     assert (t.retrieval.dense_top_k, t.retrieval.rrf_k, t.retrieval.final_k) == (30, 60, 8)
     assert t.rerank.min_keep == 3
-    assert t.compression.dedupe_cosine == 0.95
+    assert t.compression.dedupe_cosine == 0.98  # 0.95 in §11.1; raised in Phase 5 (D-58)
+    assert t.compression.narrative_pressure_ratio == 1.0
     assert t.cache.l1.max_entries == 512
-    assert t.cache.l2.similarity.slot_rich == 0.90
-    assert t.cache.l2.similarity.slot_poor == 0.95
+    assert t.cache.l2.similarity.slot_rich == 0.85  # 0.90 in §11.1; calibrated in Phase 6 (D-59)
+    assert t.cache.l2.similarity.slot_poor == 0.90  # 0.95 in §11.1; calibrated in Phase 6 (D-59)
     assert t.cache.l2.ttl_seconds.filed_fact == 30 * 86400
     assert t.cache.l2.eviction.policy == "redis_volatile_lfu"
     assert t.cache.sweep_interval_seconds == 900

@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rag.core.console import utf8_console
 from rag.core.settings import PROJECT_ROOT
 
 GOLDEN = PROJECT_ROOT / "eval" / "golden.jsonl"
@@ -177,6 +178,8 @@ def evaluate(
     name: str,
     log_fn=print,
     resume: bool = False,
+    compression_mode: str | None = None,
+    context_budget: int | None = None,
 ) -> dict[str, Any]:
     from rag.query.retrieve import RetrievalSettings, hybrid_retrieve
     from rag.query.store import IndexStore, get_store
@@ -190,7 +193,9 @@ def evaluate(
     if not retrieval_only:
         from rag.graph import Pipeline
 
-        pipeline = Pipeline(store=store)
+        pipeline = Pipeline(
+            store=store, compression_mode=compression_mode, context_budget=context_budget
+        )
 
     # Rows are appended to the results file as they complete, so a crash or a quota stop loses
     # nothing; `resume=True` skips ids already present.
@@ -272,6 +277,8 @@ def evaluate(
             row["scope"] = res.scope.model_dump(include={"in_scope", "score", "rule", "source"})
             row["queries"] = res.retrieval.queries
             row["rerank"] = res.rerank.gate if not res.rerank.applied else "applied"
+            row["compression"] = res.compression.summary()
+            row["context_tokens"] = res.context.tokens_used
             calcs = [c.model_dump() for c in res.calculations]
             if q.get("expected"):
                 row.update(score_numeric(q, res.answer.answer_markdown, calcs))
@@ -290,6 +297,8 @@ def evaluate(
     summary["embedder"] = store.manifest.embedder
     summary["corpus_version"] = store.corpus_version
     summary["retrieval_only"] = retrieval_only
+    summary["compression_mode"] = compression_mode
+    summary["context_budget"] = context_budget
     summary["k"] = k
     summary["elapsed_s"] = round(time.time() - started, 1)
     summary["generated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
@@ -424,6 +433,7 @@ def drop_rows(name: str, ids: set[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_console()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -437,6 +447,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--resume", action="store_true", help="skip ids already in the results file")
     ap.add_argument("--redo", help="comma-separated ids to drop from the results before resuming")
     ap.add_argument("--rescore", action="store_true", help="re-score saved answers; no model calls")
+    ap.add_argument(
+        "--compression",
+        choices=("classifier", "never", "always"),
+        default=None,
+        help="compression arm (default: thresholds.yaml `compression.mode`)",
+    )
+    ap.add_argument(
+        "--context-budget",
+        type=int,
+        default=None,
+        help="override the profile's context_budget_tokens (e.g. 2500 to mirror groq_build)",
+    )
     args = ap.parse_args(argv)
 
     from rag.core.logging import configure_logging
@@ -474,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
         k=args.k,
         name=name,
         resume=args.resume,
+        compression_mode=args.compression,
+        context_budget=args.context_budget,
     )
     print(json.dumps(summary["overall"], indent=2))
     print("results:", RESULTS_DIR / f"{name}.jsonl")

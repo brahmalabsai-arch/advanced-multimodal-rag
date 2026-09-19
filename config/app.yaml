@@ -1,5 +1,12 @@
 # Application settings (architecture §11.3). Localhost only during the build (D-44).
-server: {host: 127.0.0.1, port: 8000, workers: 1}
+# Phase 8: `max_question_chars` and `request_timeout_seconds` are the input limits (§13);
+# startup refuses a non-loopback bind and the request guard rejects non-loopback clients.
+server:
+  host: 127.0.0.1
+  port: 8000
+  workers: 1
+  max_question_chars: 1000
+  request_timeout_seconds: 120
 env: ${APP_ENV:dev}
 dev_clock: {enabled_in: [dev], max_offset_days: 400}
 paths:

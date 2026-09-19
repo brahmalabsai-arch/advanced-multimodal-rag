@@ -1,0 +1,20 @@
+# NFR results (Phase 7)
+
+Generated 2026-09-19T13:05:00+00:00 · `eval/nfr_results.py` · targets from `docs/problemstatement.md` · golden run `golden_phase4_claude`. Every number is read from a file in this repository; nothing is re-run here.
+
+| NFR | Requirement | Target | Status | Measured | Source |
+|---|---|---|---|---|---|
+| NFR-1 | Accuracy | ≥ 95 % exact match on POINT_LOOKUP, ≥ 90 % on COMPUTATION | ✅ met | POINT_LOOKUP 100.0% (n=20), COMPUTATION 100.0% (n=8) | `eval/results/golden_phase4_claude.summary.json` |
+| NFR-2 | Faithfulness | RAGAS faithfulness ≥ 0.90 | ✅ met | groq judge 1.000 (n=4); claude judge 0.994 (n=13) — same-family judges, indicative | `docs/reports/ragas_groq.md`, `docs/reports/ragas_claude.md` |
+| NFR-3 | Cache safety | false-hit rate ≤ 1 % on the adversarial set | ✅ met | 0.0% on 286 adversarial pairs (guard blocked 286) | `docs/reports/cache_threshold_calibration.md` |
+| NFR-4 | Cost | ≥ 30 % fewer large-model calls than no cache | ✅ met | 73.5% of 5230 replayed queries served from cache at capacity 100 (3843 calls avoided) | `docs/reports/cache_policy_benchmark.md` |
+| NFR-5 | Latency | cache hit p50 < 300 ms; full pipeline p50 < 10 s | ✅ met | 50-query mixed profile: hit p50 **40 ms** (n=20), full pipeline p50 **4,773 ms** (n=30, anthropic profile); walkthrough hits 12–40 ms. The row-level JSON was lost when a later provider-outage run overwrote it; the report text is the record | `docs/reports/local_resource_profile.md`, `docs/reports/cache_walkthrough.md` |
+| NFR-6 | Compression fidelity | 0 compressed contexts containing an unsourced number | ✅ met | 0 violations reached generation, 0 compressor outputs reverted by the guard over 458 logged requests | `data/logs/compression_decisions.jsonl`, `docs/reports/compression_ablation.md` |
+| NFR-7 | Local runnability | fresh clone runs end-to-end on a laptop CPU; no PyTorch when serving | ✅ met | peak RSS 478.8 MB and 5.6 s to first request on this laptop (50-query profile); `requirements-serve.txt` has no torch; fresh-clone rehearsal passed (setup → ingest → serve → G1 → cache walkthrough from a new directory, README commands only) | `docs/reports/local_resource_profile.md`, `docs/reports/fresh_clone_rehearsal.md` |
+| NFR-8 | Cost ceiling | the whole build runs on the Groq free tier; enrichment cached | 🟡 partial | 753 Groq calls logged; evaluation runs also used anthropic after the daily Groq window was exhausted (D-45 note, user-sanctioned) | `data/logs/llm_usage.jsonl` |
+| NFR-9 | Reproducibility | deterministic ingestion; versioned index artifacts | ✅ met | `corpus_version` + `ingestion_config_hash` in the manifest; exact dense search (D-54); benchmark harness reproducible per seed (`tests/test_eval_harness.py`) | `data/index/*/manifest.json`, `tests/` |
+| NFR-10 | Explainability | debug panel shows chunks, scores, gate and cache decisions | ✅ met | debug panel v3 (slots, scope, expansion, rerank, compression, retrieval, calculator, verification), cache panel v4 and the ops panel | `frontend/`, `GET /api/admin/stats` |
+| NFR-11 | Swappability | profile switch is configuration only; inactive templates dry-run validated | ✅ met | `scripts/check_profile.py --dry-run`: 4 profiles pass with no network (config, roles, constructor with provider_kwargs, budgets, structured output); `MODEL_PROFILE=anthropic` also ran the evaluation pipeline end-to-end | `docs/reports/model_swap_dry_run.md`, `config/models.yaml` |
+| NFR-12 | Security (localhost) | binds 127.0.0.1; admin/dev-clock only in dev; keys only in .env | ✅ met | bind asserted at startup; admin routes 404 outside dev and the dev clock refuses an offset (`tests/test_cache.py`); secrets are `SecretStr` and redacted in logs | `src/rag/api/main.py`, `tests/test_cache.py`, `tests/test_logging_redaction.py` |
+
+**11 of 12 met outright**; the rest are partial or pending, each with the specific gap named. The remaining partial is the Groq-only cost ceiling (NFR-8): the build and serving ran on the Groq free tier, the full evaluation runs did not (D-45 note).

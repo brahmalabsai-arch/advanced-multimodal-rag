@@ -2,9 +2,11 @@
 
 Order: calculation blocks, then row facts and tables, then narrative text, then figures —
 within each group by retrieval rank. Every block carries a citation header
-`[C3 | Form 10-K › Item 8 › Consolidated Balance Sheets | PDF p.141 | table]`. The context is
-truncated by rank to the profile's token budget (2,500 on `groq_build`); compression replaces
-plain truncation in Phase 5. For VISUAL intents the figure PNGs (max 2) are attached as images.
+`[C3 | Form 10-K › Item 8 › Consolidated Balance Sheets | PDF p.141 | table]`. Phase 5: the
+compression node's output (`compressed`, keyed by chunk id) replaces chunk bodies, removes
+dropped / de-duplicated chunks and appends merged citations to the header; the budget is then
+filled by rank, so truncation only bites after compression. For VISUAL intents the figure PNGs
+(max 2) are attached as images.
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ class ContextBlock(BaseModel):
     rank: int | None = None
     rrf: float | None = None
     truncated: bool = False
+    compression: str | None = Field(default=None, description="applied compressor action")
+    merged_from: list[str] = Field(default_factory=list, description="de-duplicated chunk ids")
 
 
 class AssembledContext(BaseModel):
@@ -88,9 +92,13 @@ def assemble_context(
     token_budget: int,
     intent: str = "POINT_LOOKUP",
     needs_image: bool = False,
+    compressed: dict | None = None,
 ) -> AssembledContext:
+    """`compressed` maps chunk id -> `CompressedChunk` (rag.compress.compressors); chunks it
+    marks dropped are skipped and its `text` replaces the chunk body."""
     blocks: list[ContextBlock] = []
     used = 0
+    compressed = compressed or {}
 
     # Calculations first: they are small and the model must use them verbatim.
     for i, calc in enumerate(calculations, start=1):
@@ -119,9 +127,17 @@ def assemble_context(
         chunk = store.get(cand.chunk_id)
         if chunk is None:
             continue
-        body = block_body(chunk)
+        comp = compressed.get(chunk.id)
+        if comp is not None and comp.dropped:
+            continue
+        body = comp.text if comp is not None else block_body(chunk)
         header_id = f"C{cid + 1}"
-        header = f"[{header_id} | {citation_label(chunk)}]"
+        label = citation_label(chunk)
+        merged = list(comp.merged_from) if comp is not None else []
+        if merged:
+            pages = sorted({store.get(m).metadata.page for m in merged if store.get(m)})
+            label += " | also PDF p." + ", ".join(str(p) for p in pages)
+        header = f"[{header_id} | {label}]"
         tokens = count_tokens(header + "\n" + body)
         if used + tokens > token_budget:
             dropped.append(cand.chunk_id)
@@ -140,6 +156,8 @@ def assemble_context(
                 token_count=tokens,
                 rank=rank + 1,
                 rrf=cand.rrf,
+                compression=comp.applied if comp is not None and comp.applied != "KEEP" else None,
+                merged_from=merged,
             )
         )
         used += tokens

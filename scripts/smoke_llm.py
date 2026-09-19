@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from rag.core.console import utf8_console
 from rag.core.ledger import UsageLedger
 from rag.core.logging import configure_logging, get_logger
 from rag.core.settings import PROJECT_ROOT, SettingsError, get_settings
@@ -35,6 +36,7 @@ class ImageDescription(BaseModel):
 
 
 def main() -> int:
+    utf8_console()
     try:
         settings = get_settings()
         configure_logging(settings.log_level, secrets=settings.secret_values())

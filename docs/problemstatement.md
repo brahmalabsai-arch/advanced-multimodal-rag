@@ -4,9 +4,9 @@
 |---|---|
 | Project | ADVANCED_RAG — Balance Sheet Analysis Assistant |
 | Owner | Rakesh (GitHub: `brahmalabsai-arch`) |
-| Document version | v0.3 (review rounds 1 and 2 incorporated) |
-| Date | 17 September 2026 |
-| Change log | v0.1 initial proposal · v0.2 review round 1: simple HTML UI, swappable model profiles, calculator + citations confirmed, single-turn v1, industry-standard cache policy, multimodal strategy · v0.3 review round 2: **localhost-only build**, **Groq-only models during the build**, Kubernetes removed, online deployment and advanced models deferred until the backend is complete |
+| Document version | v0.4 (statuses at the backend-complete gate) |
+| Date | 19 September 2026 |
+| Change log | v0.1 initial proposal · v0.2 review round 1: simple HTML UI, swappable model profiles, calculator + citations confirmed, single-turn v1, industry-standard cache policy, multimodal strategy · v0.3 review round 2: **localhost-only build**, **Groq-only models during the build**, Kubernetes removed, online deployment and advanced models deferred until the backend is complete · v0.4 Phase 8: NFR table carries measured status (`docs/reports/nfr_results.md`), success criteria ticked with evidence |
 | Companion documents | [`architecture.md`](./architecture.md) · [`implementation_plan.md`](./implementation_plan.md) |
 | Source corpus | `2026_NVIDIA_ANNUAL_REPORT.pdf` (Annual Review + Notice of Annual Meeting + Proxy Statement + Form 10-K) |
 
@@ -178,7 +178,7 @@ Requirements FR-1 to FR-7 map one-to-one to the capabilities in the original bri
 
 ## 7. Non-functional requirements
 
-Targets below are **proposed starting targets** to be validated in the evaluation phase, not measured results.
+Targets below were proposed before the build. **Measured status (Phase 7–8)** is in [`docs/reports/nfr_results.md`](./reports/nfr_results.md): NFR-1–6, 9, 10, 12 met; NFR-7 met by the Phase 8 fresh-clone rehearsal (`docs/reports/fresh_clone_rehearsal.md`); NFR-11 met by the Phase 8 model-swap dry run (`docs/reports/model_swap_dry_run.md`); NFR-8 partial — the build ran on the Groq free tier, but the full golden, compression-ablation and RAGAS evaluation runs used the `anthropic` profile when the Groq daily window was exhausted (architecture D-45 note; user-sanctioned deviation).
 
 | ID | Category | Requirement |
 |---|---|---|
@@ -262,15 +262,17 @@ Values verified directly from the Consolidated Balance Sheets (PDF p. 141, USD m
 
 ## 11. Success criteria (definition of done)
 
-1. All FR-1…FR-7 implemented and demonstrable in the UI debug panel.
-2. NFR-1 to NFR-6 met on the golden + adversarial sets, or deviations documented with root cause.
-3. Cache-policy benchmark report produced, comparing all eight options discussed in [B1].
-4. Compression-classifier ablation produced: always-compress vs never-compress vs classifier-gated, on accuracy, tokens, and latency [B2].
-5. Cost report: large-model calls and tokens per 100 queries, with and without cache/compression.
-6. README explains every component with the reasoning recorded in the decision log (`architecture.md` §16).
-7. Localhost runbook: fresh clone → ingest → serve → ask questions and exercise the cache walkthrough in the browser, following the README only.
-8. Model-swap readiness: Anthropic and Gemini profile templates pass a dry-run validation with no code changes.
-9. Phase exit criteria in `implementation_plan.md` are all met.
+Status at the backend-complete gate (2026-09-19):
+
+1. ✅ All FR-1…FR-7 implemented and demonstrable in the UI debug panel — debug, cache and ops panels (`frontend/`).
+2. ✅ NFR-1 to NFR-6 met on the golden + adversarial sets, or deviations documented with root cause — `docs/reports/nfr_results.md`.
+3. ✅ Cache-policy benchmark report produced, comparing all eight options discussed in [B1] — `docs/reports/cache_policy_benchmark.md` (9 policies × 5 capacities).
+4. ✅ Compression-classifier ablation produced: always-compress vs never-compress vs classifier-gated, on accuracy, tokens, and latency [B2] — `docs/reports/compression_ablation.md`.
+5. ✅ Cost report: large-model calls and tokens per 100 queries, with and without cache/compression — cache: `cache_policy_benchmark.md` (calls avoided per capacity); compression: `compression_ablation.md` (large input tokens per question per arm); per-request tokens in every trace and the ops panel.
+6. ✅ README explains every component with the reasoning recorded in the decision log (`architecture.md` §16) — README → *Component by component*.
+7. ✅ Localhost runbook: fresh clone → ingest → serve → ask questions and exercise the cache walkthrough in the browser, following the README only — `docs/reports/fresh_clone_rehearsal.md` (scripted pass of the same steps; the browser click-through stays on the human-review list).
+8. ✅ Model-swap readiness: Anthropic and Gemini profile templates pass a dry-run validation with no code changes — `docs/reports/model_swap_dry_run.md`.
+9. ✅ Phase exit criteria in `implementation_plan.md` are all met — with the documented deviations (D-23, D-24, D-45, D-61, D-62).
 
 ---
 

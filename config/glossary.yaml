@@ -25,7 +25,7 @@ metrics:
   # ---------------------------------------------------------------- balance sheet
   total assets:
     statement: balance_sheet
-    synonyms: [total assets, asset base, overall assets, total asset value, assets in total]
+    synonyms: [total assets, asset base, overall assets, total asset value, total asset balance, assets in total]
   total current assets:
     statement: balance_sheet
     synonyms: [total current assets, current assets]
@@ -246,3 +246,40 @@ lexicons:
     compare: [compare, compared, comparison, versus, vs, vs., against, relative to]
     total: [total, sum, combined, aggregate, together]
   time_anchor: [upcoming, next, now, today, current, currently, right now, at present, latest, this year's, forthcoming, scheduled, when is, when will]
+  # Named subjects that are not statement line items but that a question can be *about*
+  # (Phase 7 cache guard, D-60). The benchmark caught "when is the annual meeting" and "what is
+  # the record date" sharing every slot and embedding at cosine 0.92 — a real false hit that the
+  # Phase 6 pair set never posed. Matched terms (canonical ids, sorted) become `topic_key`.
+  # Keep this list to concepts the report discusses by name; metrics belong under `metrics:`.
+  topic_terms:
+    annual_meeting: [annual meeting, meeting of stockholders, stockholders meeting, stockholder meeting, shareholder meeting]
+    record_date: [record date]
+    proxy_statement: [proxy statement, proxy materials, notice of internet availability]
+    voting: [vote, votes, voting, ballot, proxy card, quorum]
+    gross_margin: [gross margin, gross margins]
+    operating_margin: [operating margin, operating margins]
+    h20: [h20]
+    export_controls: [export control, export controls, export licence, export license, export licensing, licensing requirement]
+    five_layer_cake: [five-layer cake, five layer cake, five layers]
+    total_return: [cumulative total return, cumulative stock return, total shareholder return, total return, stock return, stock performance graph]
+    pay_mix: [pay mix, target pay mix, compensation mix]
+    pay_versus_performance: [pay versus performance, pay-versus-performance, compensation actually paid]
+    say_on_pay: [say-on-pay, say on pay]
+    auditor: [independent registered public accounting firm, auditor, audit fees]
+    board: [board of directors, director nominees, lead independent director]
+    supply_chain: [supply chain, supply constraints, foundry capacity]
+    data_center: [data center segment, data center revenue, data centre segment]
+    gaming: [gaming segment, gaming revenue]
+  # What the question asks *about* its slots (Phase 6 cache guard, D-59). Two questions with the
+  # same entity / period / metric but a different ask ("what were total assets" vs "how does
+  # NVIDIA account for total assets") embed at cosine 0.93-0.97 with bge-small - closer than
+  # genuine paraphrases - so the ask is a hard slot, not a similarity problem. First matching
+  # class in this order wins; no match = `value`.
+  ask_type:
+    advice: [should i, should we, is it a good, good buy, recommend, worth buying, worth investing]
+    risk: [risk, risks, risky, exposure, exposed to, uncertainty, uncertainties, threat, threats]
+    assumption: [assumption, assumptions, estimate, estimates, estimated, judgement, judgment, methodology, underlie, underlying, audited, unaudited, disclosure control, disclosure controls, internal control, internal controls, segment detail, segment breakdown, by segment]
+    location: [which note, which section, which page, which footnote, what page, what section, where is, where are, where in, where does, where did, where can, in which note, in which section, disclosed in, reported in, presented in]
+    person: [who is, who are, who may, who can, who was, who were, who serves, who chairs, who created, who founded, who leads, who audits, who signs, who signed, who prepared, who approved, who owns, who holds, who certifies, who certified]
+    method: [how does, how do, how is, how are, how did nvidia account, account for, accounted for, accounting for, accounting policy, recognize, recognizes, recognized, recognition, measured, measurement, treated, treatment, defined, definition]
+    reason: [why, what drove, what caused, what explains, what led to, reason, reasons, drivers, driver, explain, explains, explanation, attributable to, because of, due to]

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from rag.core.console import utf8_console
 from rag.core.settings import PROJECT_ROOT
 
 RESULTS_DIR = PROJECT_ROOT / "eval" / "results"
@@ -106,6 +107,7 @@ def render(name: str, title: str, summary: dict[str, Any], rows: list[dict[str, 
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_console()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("name")
     ap.add_argument("--title", default=None)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 
+from rag.core.console import utf8_console
 from rag.core.settings import PROJECT_ROOT
 
 OUT = PROJECT_ROOT / "eval" / "golden.jsonl"
@@ -535,6 +536,7 @@ ROWS = [
 
 
 def main() -> int:
+    utf8_console()
     with OUT.open("w", encoding="utf-8") as fh:
         for r in ROWS:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")

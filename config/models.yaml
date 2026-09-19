@@ -27,10 +27,12 @@ profiles:
       provider_kwargs: {reasoning_format: hidden, reasoning_effort: medium}
     vision:
       provider: groq
-      model: qwen/qwen3.8-27b       # vision + JSON mode; max 3 images / request, 2048 tokens per image
-      # Console limit is 8000 TPM; Groq bills image tokens above our 2048 estimate, so pace at 6000.
-      # Groq also enforces 1000 *output* tokens per minute and charges the requested max_tokens.
-      pacing: {rpm: 30, tpm: 6000, rpd: 1000, tpd: 200000, otpm: 1000}
+      model: qwen/qwen3.8-27b       # vision + JSON mode; max 3 images / request
+      # Console limit is 8000 TPM. Groq also gates a single request on 7000 *input* tokens (ITPM,
+      # 413 when exceeded) counting 2048 per image whatever its size, and on 1000 *output* tokens
+      # per minute charged at the requested max_tokens. Answer generation therefore caps
+      # `max_tokens` at the OTPM bucket and sheds images until text + 2048/image fits the ITPM.
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000, otpm: 1000, itpm: 7000}
       max_images_per_request: 3
       # Qwen3 reasoning tokens count toward max_tokens and OTPM; descriptions do not need them.
       provider_kwargs: {reasoning_format: hidden, reasoning_effort: none}
@@ -40,6 +42,30 @@ profiles:
       Free tier. Answer generation on gpt-oss-120b; support work on gpt-oss-20b;
       figure classification/description on qwen3.8-27b (documented exception to P2:
       there is no smaller vision model on Groq).
+
+  groq_qwen_large:                  # generator check only (plan Phase 3 task, run in Phase 4):
+    small:                          # same as groq_build except `large` = the Qwen model
+      provider: groq
+      model: openai/gpt-oss-20b
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000}
+      provider_kwargs: {reasoning_format: hidden, reasoning_effort: low}
+    large:
+      provider: groq
+      model: qwen/qwen3.8-27b
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000, otpm: 1000, itpm: 7000}
+      provider_kwargs: {reasoning_format: hidden, reasoning_effort: low}
+    vision:
+      provider: groq
+      model: qwen/qwen3.8-27b
+      pacing: {rpm: 30, tpm: 8000, rpd: 1000, tpd: 200000, otpm: 1000, itpm: 7000}
+      max_images_per_request: 3
+      provider_kwargs: {reasoning_format: hidden, reasoning_effort: none}
+    context_budget_tokens: 2500
+    structured_output: json_mode_validate
+    notes: >
+      Same free-tier pacing as groq_build with qwen3.8-27b generating answers; used by
+      `MODEL_PROFILE=groq_qwen_large eval/run_eval.py --ids ...` for the generator check
+      (docs/reports/generator_check.md). Not for serving.
 
   anthropic:                        # TEMPLATE — inactive until model switch (F1). Needs API billing.
     small:  {provider: anthropic, model: claude-haiku-4-5-20251001}

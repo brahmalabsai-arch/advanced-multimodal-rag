@@ -12,7 +12,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rag.core.logging import get_logger
-from rag.llm import LLMClient, LLMError
+from rag.core.tokens import IMAGE_TOKEN_ESTIMATE, count_tokens
+from rag.llm import LLMClient, LLMError, _schema_instruction
 from rag.query.assemble import AssembledContext
 
 log = get_logger(__name__)
@@ -75,6 +76,27 @@ def build_user_prompt(
     return "\n".join(parts)
 
 
+# Tokenizer slack: tiktoken undercounts Qwen's tokenizer by up to ~10% on this prose.
+INPUT_ESTIMATE_MARGIN = 1.1
+
+
+def fit_images_to_budget(images: list[str], prompt: str, input_cap: int | None) -> list[str]:
+    """Drop images from the end until the estimated input (text + IMAGE_TOKEN_ESTIMATE per
+    image) fits `input_cap`; always keeps the first image (the figure the question is about)."""
+    if not input_cap:
+        return list(images)
+    text_tokens = (
+        count_tokens(SYSTEM_PROMPT)
+        + count_tokens(_schema_instruction(Answer))  # the client appends this to the system text
+        + count_tokens(prompt)
+        + 16
+    ) * INPUT_ESTIMATE_MARGIN
+    kept = list(images)
+    while len(kept) > 1 and text_tokens + len(kept) * IMAGE_TOKEN_ESTIMATE > input_cap:
+        kept.pop()
+    return kept
+
+
 def generate_answer(
     client: LLMClient,
     question: str,
@@ -91,15 +113,30 @@ def generate_answer(
     slot-level hints such as how a bare calendar year was interpreted (§4.2)."""
     prompt = build_user_prompt(question, context, retry_note, notes)
     if context.images and intent == "VISUAL":
+        # The vision role is paced on *requested* output tokens (1,000 OTPM on Groq, D-52) and
+        # on a small TPM bucket; a request over either bucket is rejected before the call, so
+        # cap the budget and shed trailing images (the first one is the figure the question is
+        # about) until the request fits.
+        cap = client.max_output_tokens("vision")
+        vision_budget = min(max_tokens, cap) if cap else max_tokens
+        images = fit_images_to_budget(
+            context.images, prompt, client.max_input_tokens("vision", vision_budget)
+        )
+        if len(images) < len(context.images):
+            log.info(
+                "vision request: %d of %d figure images attached (input budget)",
+                len(images),
+                len(context.images),
+            )
         try:
             answer = client.vision_json(
                 prompt,
-                context.images,
+                images,
                 Answer,
                 role="vision",
                 system=SYSTEM_PROMPT,
                 request_id=request_id,
-                max_tokens=max_tokens,
+                max_tokens=vision_budget,
             )
             return answer, "vision"
         except LLMError as exc:
@@ -107,12 +144,13 @@ def generate_answer(
             prompt = build_user_prompt(
                 question, context.model_copy(update={"images": []}), retry_note, notes
             )
+    cap = client.max_output_tokens("large")
     answer = client.json(
         prompt,
         Answer,
         role="large",
         system=SYSTEM_PROMPT,
         request_id=request_id,
-        max_tokens=max_tokens,
+        max_tokens=min(max_tokens, cap) if cap else max_tokens,
     )
     return answer, "large"

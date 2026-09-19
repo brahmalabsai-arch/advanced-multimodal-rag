@@ -58,6 +58,7 @@ class Trace(BaseModel):
     total_latency_ms: int = 0
     rss_mb: float | None = None
     error: str | None = None
+    degraded: bool = False
 
 
 class TraceWriter:

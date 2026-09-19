@@ -14,10 +14,12 @@ import argparse
 import sys
 from pathlib import Path
 
+from rag.core.console import utf8_console
 from rag.core.settings import PROJECT_ROOT
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_console()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

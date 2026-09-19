@@ -14,8 +14,9 @@ import tiktoken
 
 ENCODING_NAME = "cl100k_base"
 
-# Groq documents 2,048 tokens per image for its current vision models
-# (console.groq.com/docs/vision).
+# Groq documents 2,048 tokens per image (console.groq.com/docs/vision). Billed usage for a
+# ≤1600 px figure crop is lower (≈ 1,090 on qwen/qwen3.8-27b), but Groq's per-minute *input*
+# gate (ITPM) pre-checks requests at the documented figure, so pacing must assume it too.
 IMAGE_TOKEN_ESTIMATE = 2048
 
 # Rough per-message framing overhead (role tags, separators).

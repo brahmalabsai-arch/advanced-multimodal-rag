@@ -15,3 +15,4 @@ tenacity>=9.0
 cachetools>=5.5
 numpy>=1.26
 psutil>=6.0
+pillow>=10.4          # bounds figure images before a vision request (rag/llm.py)
