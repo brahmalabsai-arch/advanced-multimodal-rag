@@ -1,0 +1,29 @@
+{
+ "version": 1,
+ "trained_at": "2026-09-19T05:28:20+00:00",
+ "features": [
+  "noise",
+  "length",
+  "budget_pressure",
+  "intent_weight",
+  "numeric_density",
+  "rank_norm",
+  "max_dup_sim",
+  "n_sentences_norm"
+ ],
+ "coef": [
+  0.3785,
+  1.5329,
+  -1.3878,
+  0.2175,
+  -0.0754,
+  0.4577,
+  0.8347,
+  1.1156
+ ],
+ "intercept": -1.57,
+ "decision_threshold": 0.5,
+ "n_samples": 54,
+ "n_positive": 46,
+ "seed": 20260919
+}
