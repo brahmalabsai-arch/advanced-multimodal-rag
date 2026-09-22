@@ -1,187 +1,186 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NVIDIA FY2026 — Balance Sheet RAG</title>
-  <link rel="stylesheet" href="/static/app.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LedgerLens — ask an annual report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./app.css">
 </head>
 <body>
-  <header class="top">
-    <div>
-      <h1>Balance Sheet Analysis — NVIDIA FY2026</h1>
-      <p class="sub">Advanced multimodal RAG · localhost build · <span id="status" class="status">connecting…</span></p>
-    </div>
-  </header>
 
-  <main>
-    <section class="ask">
-      <form id="ask-form">
-        <textarea id="question" rows="2" placeholder="e.g. What is the current ratio as of Jan 25, 2026?" autofocus></textarea>
-        <div class="controls">
-          <label class="toggle"><input type="checkbox" id="bypass"> bypass cache</label>
-          <button id="submit" type="submit">Ask</button>
+<header class="topbar">
+  <div class="topbar__brand">
+    <span class="wordmark">LedgerLens</span>
+    <span class="doc-chip" id="doc-chip">Reading: NVIDIA annual report, FY2026 · 175 pages</span>
+  </div>
+  <div class="topbar__tools">
+    <span class="pill pill--quiet" id="model-pill" hidden></span>
+    <button type="button" class="link-button" id="change-key" hidden>Change key</button>
+    <a class="link-button" href="https://github.com/brahmalabsai-arch" target="_blank" rel="noopener">Source code</a>
+  </div>
+</header>
+
+<!-- ───────────────────────── key gate ───────────────────────── -->
+<main class="gate" id="gate">
+  <section class="gate__pitch">
+    <p class="kicker">Balance sheet question answering</p>
+    <h1 class="display">Every figure comes with the page it came from.</h1>
+    <p class="lede">Ask about liquidity, leverage or the movement in a line item. The system searches the filing's text, tables and charts, computes ratios in code instead of asking a model to do arithmetic, and cites the page behind each number.</p>
+
+    <div class="rule"></div>
+
+    <dl class="stats">
+      <div class="stat">
+        <dt class="stat__label">Numeric answers correct on the test set</dt>
+        <dd class="stat__value">100%</dd>
+      </div>
+      <div class="stat">
+        <dt class="stat__label">Wrong answers reused from memory across 286 trick pairs</dt>
+        <dd class="stat__value">0.0%</dd>
+      </div>
+      <div class="stat">
+        <dt class="stat__label">Indexed blocks of text, table rows and figures</dt>
+        <dd class="stat__value">689</dd>
+      </div>
+    </dl>
+
+    <p class="gate__note">Retrieval, ratio arithmetic and citations run without any model. Your key pays only for the written explanation.</p>
+  </section>
+
+  <section class="gate__form" aria-labelledby="gate-heading">
+    <h2 id="gate-heading" class="heading-2">Connect your model key</h2>
+    <p class="muted">Written answers run on your own API key, so your questions are never billed to anyone else.</p>
+
+    <form id="key-form" autocomplete="off">
+      <fieldset class="field">
+        <legend class="field__label">Provider</legend>
+        <div class="segmented" id="provider-group" role="radiogroup" aria-label="Provider">
+          <button type="button" class="segment is-selected" role="radio" aria-checked="true" data-provider="groq">Groq</button>
+          <button type="button" class="segment" role="radio" aria-checked="false" data-provider="anthropic">Anthropic</button>
+          <button type="button" class="segment" role="radio" aria-checked="false" data-provider="gemini">Gemini</button>
+          <button type="button" class="segment" role="radio" aria-checked="false" data-provider="openrouter">OpenRouter</button>
         </div>
-      </form>
-      <div class="examples" id="examples">
-        <span>Try:</span>
-        <button type="button" data-q="What were NVIDIA's total assets as of Jan 25, 2026?">total assets</button>
-        <button type="button" data-q="What is the current ratio as of Jan 25, 2026?">current ratio</button>
-        <button type="button" data-q="How much did inventories grow year-over-year?">inventories YoY</button>
-        <button type="button" data-q="What drove the first-quarter fiscal 2026 charge related to H20?">H20 charge</button>
-        <button type="button" data-q="What are the layers in NVIDIA's five-layer cake?">five-layer cake</button>
-        <button type="button" data-q="How did NVIDIA's 5-year total return compare to the S&P 500 and Nasdaq 100?">total return chart</button>
-        <button type="button" data-q="What was the cash pile at FY26 year end?">cash pile (glossary)</button>
-        <button type="button" data-q="Should I buy NVIDIA stock?">out of scope</button>
-        <button type="button" data-q="When is NVIDIA's 2026 annual meeting of stockholders?">annual meeting (time-anchored)</button>
+      </fieldset>
+
+      <div class="field">
+        <label class="field__label" for="api-key">API key</label>
+        <input class="input input--mono" id="api-key" type="password" inputmode="text" spellcheck="false"
+               placeholder="gsk_…" aria-describedby="key-help">
+        <p class="field__help" id="key-help">Paste a key with permission to call chat models.</p>
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" id="remember-key" checked>
+        <span>Keep it for this browser tab only</span>
+      </label>
+
+      <div class="actions">
+        <button type="submit" class="button button--primary" id="connect">Test key and start</button>
+      </div>
+
+      <p class="form-error" id="key-error" role="alert" hidden></p>
+    </form>
+
+    <aside class="notice">
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="notice__icon"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg>
+      <p>Your key travels with each request over HTTPS, stays in memory for that request, and is never written to logs, traces or the answer cache. Nothing is stored on the server.</p>
+    </aside>
+
+    <p class="muted small">This runs on a free instance that sleeps after 15 idle minutes, so the first question can take up to a minute while it wakes.</p>
+  </section>
+</main>
+
+<!-- ───────────────────────── workspace ───────────────────────── -->
+<main class="workspace" id="workspace" hidden>
+  <div class="workspace__main">
+
+    <form class="ask" id="ask-form">
+      <label class="visually-hidden" for="question">Your question</label>
+      <input class="input ask__input" id="question" type="text"
+             placeholder="What is the current ratio at the latest balance sheet date?" autocomplete="off">
+      <button type="submit" class="button button--primary" id="ask">Ask</button>
+    </form>
+
+    <div class="suggestions" id="suggestions">
+      <button type="button" class="chip">What is the current ratio at the latest balance sheet date?</button>
+      <button type="button" class="chip">How did inventories change year over year?</button>
+      <button type="button" class="chip">What is total debt to equity?</button>
+      <button type="button" class="chip">Why did gross margin fall?</button>
+    </div>
+
+    <!-- empty -->
+    <section class="panel panel--empty" id="state-empty">
+      <p class="panel__title">Nothing asked yet</p>
+      <p class="muted">Pick one of the questions above, or write your own about the balance sheet, income statement or cash flows.</p>
+    </section>
+
+    <!-- working -->
+    <section class="panel" id="state-working" hidden aria-live="polite">
+      <p class="panel__title" id="working-title">Reading the filing</p>
+      <ol class="progress" id="progress"></ol>
+      <p class="muted small" id="warming" hidden>The server was asleep. Waking it takes up to a minute; this only happens on the first question.</p>
+    </section>
+
+    <!-- error -->
+    <section class="panel panel--error" id="state-error" hidden role="alert">
+      <p class="panel__title" id="error-title">Something went wrong</p>
+      <p id="error-body" class="muted"></p>
+      <div class="actions actions--inline">
+        <button type="button" class="button button--quiet" id="error-retry">Try again</button>
+        <button type="button" class="button button--quiet" id="error-key" hidden>Change key</button>
       </div>
     </section>
 
-    <!-- cache panel v4 (Phase 6): tiers, TTL classes, LFU, dev clock -->
-    <section id="cache-panel" class="cache-panel">
-      <div class="cache-head">
-        <h3>Semantic cache <span class="meta">L1 exact · L2 semantic (slot guard) · Redis-style LFU · TTL classes</span></h3>
-        <span id="cache-stats" class="meta">loading…</span>
-      </div>
-      <div class="cache-controls">
-        <span class="clock" id="clock-display">clock: real time</span>
-        <button type="button" class="mini" data-adv="86400">+1 d</button>
-        <button type="button" class="mini" data-adv="604800">+7 d</button>
-        <button type="button" class="mini" data-adv="2592000">+30 d</button>
-        <button type="button" class="mini" id="clock-reset">reset clock</button>
-        <span class="spacer"></span>
-        <button type="button" class="mini" id="cache-sweep">sweep now</button>
-        <button type="button" class="mini danger" id="cache-purge">purge all</button>
-        <button type="button" class="mini" id="cache-entries-toggle">entries</button>
-      </div>
-      <div id="cache-request" class="cache-request kv hidden"></div>
-      <div id="cache-entries" class="hidden">
-        <table id="cache-entries-table" class="tbl">
-          <thead><tr><th>class</th><th>slots</th><th>query</th><th>lfu</th><th>hits</th><th>expires</th><th>created</th><th>intent</th></tr></thead>
-          <tbody></tbody>
+    <!-- answer -->
+    <article class="answer" id="state-answer" hidden aria-live="polite">
+      <header class="answer__head">
+        <p class="answer__figure" id="answer-figure"></p>
+        <div class="answer__meta">
+          <p class="answer__caption" id="answer-caption"></p>
+          <p class="answer__working" id="answer-working"></p>
+        </div>
+      </header>
+
+      <div class="prose" id="answer-prose"></div>
+
+      <p class="disclaimer" id="answer-disclaimer" hidden></p>
+
+      <div class="citations" id="citations"></div>
+
+      <div class="figures">
+        <table class="figures__table" id="figures-table" hidden>
+          <caption class="figures__caption">Figures used</caption>
+          <tbody id="figures-body"></tbody>
         </table>
       </div>
-    </section>
-
-    <!-- ops panel (Phase 7): what the logs say about the last N requests -->
-    <section id="ops-panel" class="cache-panel">
-      <div class="cache-head">
-        <h3>Operations <span class="meta">last <span id="ops-window">500</span> requests from data/logs — cache, models, quality, latency</span></h3>
-        <span class="cache-controls">
-          <button type="button" class="mini" id="ops-refresh">refresh</button>
-          <button type="button" class="mini" id="ops-toggle">show</button>
-        </span>
-      </div>
-      <div id="ops-body" class="hidden">
-        <div class="ops-grid">
-          <div>
-            <h4>Cache hit rate over time <span class="meta">oldest → newest, bypassed requests excluded</span></h4>
-            <div id="ops-spark" class="spark"></div>
-            <pre id="ops-cache"></pre>
-          </div>
-          <div>
-            <h4>Models by role</h4>
-            <table id="ops-models" class="tbl">
-              <thead><tr><th>role</th><th>model</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>pacing wait</th><th>retries</th></tr></thead>
-              <tbody></tbody>
-            </table>
-            <h4>Quality</h4>
-            <pre id="ops-quality"></pre>
-          </div>
-        </div>
-        <div class="ops-grid">
-          <div>
-            <h4>Latency per node (ms)</h4>
-            <table id="ops-latency" class="tbl">
-              <thead><tr><th>node</th><th>n</th><th>p50</th><th>p95</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div>
-            <h4>Compression decision mix</h4>
-            <pre id="ops-compression"></pre>
-            <h4>Process</h4>
-            <pre id="ops-process"></pre>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="result" class="result hidden">
-      <div class="answer-head">
-        <span class="badge" id="cache-tier">—</span>
-        <span class="badge" id="intent">—</span>
-        <span class="badge" id="confidence">—</span>
-        <span class="badge" id="answer-class">—</span>
-        <span class="meta" id="latency"></span>
-      </div>
-      <div id="warning" class="warning hidden"></div>
-      <article id="answer" class="answer"></article>
-      <div id="figures" class="figures"></div>
-      <div class="citations">
-        <h3>Citations</h3>
-        <div id="citations" class="chips"></div>
-      </div>
-
-      <details id="debug" class="debug">
-        <summary>Debug panel — slots, scope, expansion, retrieval, rerank, compression, calculator, tokens and latency</summary>
-        <div class="debug-grid">
-          <div>
-            <h4>Query understanding (rules; no model call unless stated)</h4>
-            <div id="slots" class="kv"></div>
-            <h4>Scope gate</h4>
-            <pre id="scope"></pre>
-            <h4>Intent and expansion</h4>
-            <pre id="analysis"></pre>
-            <table id="queries-table" class="tbl">
-              <thead><tr><th>kind</th><th>query</th><th>filter</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div>
-            <h4>Rerank gate</h4>
-            <pre id="rerank"></pre>
-            <h4>Compression (classifier, no model call unless EXTRACT_LLM)</h4>
-            <pre id="compression"></pre>
-            <table id="compression-table" class="tbl">
-              <thead><tr><th>chunk</th><th>modality</th><th>decision</th><th>applied</th><th>tokens</th><th>density</th><th>dup</th><th>fidelity</th><th>reason</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="debug-grid">
-          <div>
-            <h4>Retrieval (dense ⊕ BM25 → RRF → rerank)</h4>
-            <table id="retrieval-table" class="tbl">
-              <thead><tr><th>#</th><th>chunk</th><th>modality</th><th>page</th><th>dense</th><th>bm25</th><th>rrf</th><th>rerank</th><th>hit by</th><th>in ctx</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div>
-            <h4>Calculator</h4>
-            <pre id="calc"></pre>
-            <h4>Verification</h4>
-            <pre id="verify"></pre>
-            <h4>Tokens &amp; latency</h4>
-            <pre id="tokens"></pre>
-          </div>
-        </div>
-        <h4>Context blocks sent to the model (<span id="ctx-tokens"></span> tokens)</h4>
-        <div id="context-blocks" class="blocks"></div>
-        <p class="meta">request <code id="request-id"></code> · <a id="trace-link" href="#" target="_blank">trace JSON</a> · corpus <code id="corpus-version"></code></p>
-      </details>
-    </section>
-  </main>
-
-  <div id="modal" class="modal hidden" role="dialog">
-    <div class="modal-body">
-      <div class="modal-head"><span id="modal-title"></span><button id="modal-close" type="button">×</button></div>
-      <img id="modal-img" alt="page thumbnail">
-    </div>
+    </article>
   </div>
 
-  <script src="/static/vendor/marked.min.js"></script>
-  <script src="/static/vendor/purify.min.js"></script>
-  <script src="/static/app.js"></script>
+  <!-- method rail -->
+  <aside class="rail" id="rail" hidden>
+    <div class="rail__head">
+      <h2 class="heading-3">How this answer was built</h2>
+      <span class="pill pill--time" id="rail-total"></span>
+    </div>
+    <ol class="steps" id="steps"></ol>
+    <p class="rail__foot" id="rail-foot"></p>
+  </aside>
+</main>
+
+<!-- page viewer -->
+<dialog class="viewer" id="viewer">
+  <div class="viewer__bar">
+    <p class="viewer__title" id="viewer-title"></p>
+    <button type="button" class="link-button" id="viewer-close">Close</button>
+  </div>
+  <img class="viewer__img" id="viewer-img" alt="">
+</dialog>
+
+<script src="./vendor/marked.min.js"></script>
+<script src="./vendor/purify.min.js"></script>
+<script src="./app.js"></script>
 </body>
 </html>

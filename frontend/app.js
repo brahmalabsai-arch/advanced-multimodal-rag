@@ -1,310 +1,475 @@
-/* Localhost test UI (architecture §8.4). Vanilla JS; markdown via marked, sanitised by DOMPurify. */
+/* LedgerLens frontend
+ * ---------------------------------------------------------------------------
+ * Talks to the FastAPI backend on the same origin.
+ *
+ * Expected API
+ *   POST /api/key/test      headers: X-Provider, X-Provider-Key      -> 200 {model}
+ *   POST /api/ask           headers: X-Provider, X-Provider-Key
+ *                           body:    {question}                      -> 200 AnswerPayload
+ *   GET  /api/pages/{n}                                              -> image
+ *
+ * AnswerPayload (every field optional except answer_markdown)
+ *   {
+ *     answer_markdown: "…",
+ *     headline:  {value: "3.91", caption: "current ratio, as of 25 January 2026",
+ *                 working: "125,605 / 32,163 — USD millions"},
+ *     figures_used: [{label: "Total current assets", value: "125,605"}],
+ *     citations:    [{label: "Consolidated Balance Sheets", page: 141}],
+ *     confidence:   "high" | "medium" | "low",
+ *     degraded:     false,
+ *     disclaimer:   "…",
+ *     trace: {
+ *       cache_tier: "miss" | "L1" | "L2",
+ *       model: "llama-3.3-70b",
+ *       total_seconds: 4.8,
+ *       verified: true,
+ *       slots: {entity: "…", period: "FY2026", formula: "current_ratio"},
+ *       steps: [{label, detail, seconds, tags: [], kind: "normal|computed|checked"}]
+ *     }
+ *   }
+ * If trace.steps is missing the rail is built from whatever trace fields exist.
+ * ------------------------------------------------------------------------- */
+
 (function () {
   "use strict";
-  const $ = (id) => document.getElementById(id);
-  const form = $("ask-form"), qEl = $("question"), submit = $("submit"), bypass = $("bypass");
-  const result = $("result"), answerEl = $("answer"), figuresEl = $("figures"), citesEl = $("citations");
-  const modal = $("modal"), modalImg = $("modal-img"), modalTitle = $("modal-title");
-  let last = null;
 
-  marked.setOptions({ gfm: true, breaks: false });
+  var API = "";
+  var DEMO = new URLSearchParams(location.search).has("demo");
 
-  let adminEnabled = false;
+  var STORE = { provider: "ll.provider", key: "ll.key" };
+  var session = { provider: "groq", key: "" };
 
-  async function checkReady() {
+  var el = function (id) { return document.getElementById(id); };
+  var gate = el("gate");
+  var workspace = el("workspace");
+
+  /* ── key handling ─────────────────────────────────────────────────────── */
+
+  function loadKey() {
     try {
-      const r = await fetch("/readyz");
-      const j = await r.json();
-      const el = $("status");
-      if (j.ready) {
-        el.textContent = `ready · ${j.chunks} chunks · ${j.embedder} · ${j.model_profile}` + (j.cache_enabled ? "" : " · cache OFF");
-        el.className = "status ok";
-        adminEnabled = !!j.admin_enabled;
-        refreshCache();
+      var p = sessionStorage.getItem(STORE.provider);
+      var k = sessionStorage.getItem(STORE.key);
+      if (p) { session.provider = p; }
+      if (k) { session.key = k; }
+    } catch (e) { /* private mode: keep the key in memory only */ }
+  }
+
+  function saveKey(remember) {
+    try {
+      if (remember) {
+        sessionStorage.setItem(STORE.provider, session.provider);
+        sessionStorage.setItem(STORE.key, session.key);
+      } else {
+        sessionStorage.removeItem(STORE.provider);
+        sessionStorage.removeItem(STORE.key);
       }
-      else { el.textContent = "not ready: " + (j.error || "loading"); el.className = "status bad"; setTimeout(checkReady, 3000); }
-    } catch (e) { $("status").textContent = "server unreachable"; $("status").className = "status bad"; }
+    } catch (e) { /* ignore */ }
   }
 
-  // ---- cache panel v4 (Phase 6) ----------------------------------------------------------
-  const fmtTs = (s) => s ? new Date(s * 1000).toISOString().replace("T", " ").slice(0, 16) + "Z" : "–";
-  const fmtDur = (s) => { if (s == null) return "–"; const a = Math.abs(s); if (a >= 86400) return (s / 86400).toFixed(1) + " d"; if (a >= 3600) return (s / 3600).toFixed(1) + " h"; if (a >= 60) return Math.round(s / 60) + " min"; return s + " s"; };
-
-  async function admin(path, body) {
-    const r = await fetch("/api/admin" + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
-    return r.json();
+  function clearKey() {
+    session.key = "";
+    try {
+      sessionStorage.removeItem(STORE.key);
+    } catch (e) { /* ignore */ }
   }
 
-  async function refreshCache() {
-    const statsEl = $("cache-stats"), clockEl = $("clock-display");
-    if (!adminEnabled) {
-      statsEl.textContent = "admin routes disabled (APP_ENV is not dev) — cache stats and clock unavailable";
-      document.querySelectorAll(".cache-controls button").forEach((b) => b.disabled = true);
+  function authHeaders() {
+    return { "X-Provider": session.provider, "X-Provider-Key": session.key };
+  }
+
+  /* ── screens ──────────────────────────────────────────────────────────── */
+
+  function showWorkspace(model) {
+    gate.hidden = true;
+    workspace.hidden = false;
+    el("change-key").hidden = false;
+    var pill = el("model-pill");
+    pill.hidden = false;
+    pill.textContent = (model || session.provider) + " · your key";
+    el("question").focus();
+  }
+
+  function showGate() {
+    workspace.hidden = true;
+    gate.hidden = false;
+    el("change-key").hidden = true;
+    el("model-pill").hidden = true;
+    el("api-key").value = "";
+    el("api-key").focus();
+  }
+
+  function only(id) {
+    ["state-empty", "state-working", "state-error", "state-answer"].forEach(function (s) {
+      el(s).hidden = s !== id;
+    });
+    if (id !== "state-answer") { el("rail").hidden = true; }
+  }
+
+  /* ── gate ─────────────────────────────────────────────────────────────── */
+
+  el("provider-group").addEventListener("click", function (ev) {
+    var btn = ev.target.closest("[data-provider]");
+    if (!btn) { return; }
+    session.provider = btn.dataset.provider;
+    Array.prototype.forEach.call(this.querySelectorAll(".segment"), function (b) {
+      var on = b === btn;
+      b.classList.toggle("is-selected", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    var hints = { groq: "gsk_…", anthropic: "sk-ant-…", gemini: "AIza…", openrouter: "sk-or-…" };
+    el("api-key").placeholder = hints[session.provider] || "";
+  });
+
+  el("key-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var input = el("api-key");
+    var error = el("key-error");
+    var button = el("connect");
+
+    error.hidden = true;
+    session.key = input.value.trim();
+
+    if (!session.key) {
+      error.textContent = "Paste a key to continue.";
+      error.hidden = false;
+      input.focus();
       return;
     }
-    try {
-      const s = await admin("/cache/stats");
-      const l1 = s.l1, l2 = s.l2, cls = Object.entries(l2.by_class).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
-      statsEl.textContent = `L1 ${l1.entries}/${l1.max_entries} · hits ${l1.hits} · misses ${l1.misses}  |  L2 ${l2.entries}/${l2.max_entries} (${cls}) · hits ${l2.hits} · misses ${l2.misses} · evictions ${l2.evictions} · swept ${l2.swept}` + (s.enabled ? "" : "  |  CACHE DISABLED");
-      const off = s.clock.offset_s;
-      clockEl.textContent = off ? `clock: ${s.clock.now_iso} (offset +${fmtDur(off)})` : `clock: ${s.clock.now_iso} (real time)`;
-      clockEl.className = "clock" + (off ? " shifted" : "");
-      if (!$("cache-entries").classList.contains("hidden")) await loadEntries();
-    } catch (e) { statsEl.textContent = "cache stats unavailable: " + e.message; }
-  }
 
-  async function loadEntries() {
-    const j = await admin("/cache/entries?limit=100");
-    const tb = $("cache-entries-table").querySelector("tbody"); tb.innerHTML = "";
-    for (const e of j.entries) {
-      const tr = document.createElement("tr");
-      const slots = [e.entity, e.periods_key || "–", e.metrics_key || "–", e.direction !== "none" ? e.direction : ""].filter(Boolean).join(" · ");
-      const left = e.expires_at - j.now;
-      tr.innerHTML = `<td>${e.answer_class}</td><td>${DOMPurify.sanitize(slots)}</td><td class="wrap">${DOMPurify.sanitize(e.document)}</td><td>${e.lfu_counter}</td><td>${e.hit_count}</td><td>${left > 0 ? "in " + fmtDur(left) : "EXPIRED"}</td><td>${fmtTs(e.created_at)}</td><td>${e.intent}</td>`;
-      if (left <= 0) tr.className = "expanded";
-      tb.appendChild(tr);
+    if (DEMO) {
+      saveKey(el("remember-key").checked);
+      showWorkspace("demo");
+      return;
     }
-    if (!j.entries.length) tb.innerHTML = `<tr><td colspan="8" class="wrap">no L2 entries</td></tr>`;
+
+    button.disabled = true;
+    button.textContent = "Testing the key";
+
+    fetch(API + "/api/key/test", { method: "POST", headers: authHeaders() })
+      .then(function (res) {
+        if (res.ok) { return res.json(); }
+        if (res.status === 401 || res.status === 403) {
+          throw new Error("That key was rejected by " + session.provider + ". Check it and paste it again.");
+        }
+        throw new Error("The server could not reach " + session.provider + " (status " + res.status + "). Try again in a moment.");
+      })
+      .then(function (data) {
+        saveKey(el("remember-key").checked);
+        showWorkspace(data && data.model);
+      })
+      .catch(function (err) {
+        error.textContent = err.message || "The key could not be checked.";
+        error.hidden = false;
+      })
+      .finally(function () {
+        button.disabled = false;
+        button.textContent = "Test key and start";
+      });
+  });
+
+  el("change-key").addEventListener("click", function () { clearKey(); showGate(); });
+  el("error-key").addEventListener("click", function () { clearKey(); showGate(); });
+
+  /* ── asking ───────────────────────────────────────────────────────────── */
+
+  var STAGES = [
+    "Checking answered questions",
+    "Reading the question",
+    "Searching the filing",
+    "Trimming the context",
+    "Computing the figures",
+    "Writing the explanation"
+  ];
+
+  var timers = [];
+  var lastQuestion = "";
+
+  function runProgress() {
+    var list = el("progress");
+    list.innerHTML = "";
+    STAGES.forEach(function (label, i) {
+      var li = document.createElement("li");
+      li.dataset.state = i === 0 ? "active" : "waiting";
+      li.innerHTML = '<span class="dot"></span>';
+      li.appendChild(document.createTextNode(label));
+      list.appendChild(li);
+    });
+
+    timers.forEach(clearTimeout);
+    timers = [];
+    STAGES.forEach(function (_, i) {
+      if (i === 0) { return; }
+      timers.push(setTimeout(function () {
+        var items = list.children;
+        for (var j = 0; j < i; j++) { items[j].dataset.state = "done"; }
+        items[i].dataset.state = "active";
+      }, i * 900));
+    });
+    timers.push(setTimeout(function () { el("warming").hidden = false; }, 7000));
   }
 
-  function renderCacheRequest(resp) {
-    const c = resp.cache || { tier: resp.cache_tier }, el = $("cache-request");
-    el.classList.remove("hidden"); el.innerHTML = "";
-    const chip = (html, cls) => { const s = document.createElement("span"); s.className = cls || "slot"; s.innerHTML = html; el.appendChild(s); };
-    chip(c.tier, "tier " + c.tier);
-    if (c.tier === "L1" || c.tier === "L2") {
-      chip(`similarity <b>${c.similarity == null ? "exact" : c.similarity.toFixed(4)}</b>${c.threshold ? " / threshold " + c.threshold : ""}`);
-      chip(`class <b>${c.answer_class}</b>`); chip(`expires <b>${fmtTs(c.expires_at)}</b>`);
-      chip(`lfu <b>${c.lfu_counter}</b>`); chip(`hits <b>${c.hit_count}</b>`); chip(`lookup ${c.lookup_ms} ms`);
-      chip(`from request <code>${c.origin_request_id}</code> · no model call`);
-    } else if (c.tier === "MISS") {
-      chip(`L2 candidates passing the slot guard: <b>${c.l2_candidates}</b>` + (c.best_rejected_similarity != null ? ` · best similarity ${c.best_rejected_similarity.toFixed(4)} < ${c.threshold}` : "") + ` · lookup ${c.lookup_ms} ms`);
-      const w = c.write;
-      if (w) chip(w.admitted ? `ADMITTED → ${w.tiers.join(" + ")} · class <b>${w.answer_class}</b> · expires ${fmtTs(w.expires_at)}${w.evicted ? " · evicted " + w.evicted : ""}` : `NOT ADMITTED · ${DOMPurify.sanitize(w.reasons.join("; "))}`, w.admitted ? "slot" : "slot empty");
+  function stopProgress() {
+    timers.forEach(clearTimeout);
+    timers = [];
+    el("warming").hidden = true;
+  }
+
+  function ask(question) {
+    if (!question) { return; }
+    lastQuestion = question;
+    el("question").value = question;
+    only("state-working");
+    runProgress();
+
+    var request = DEMO
+      ? fetch("./demo-answer.json").then(function (r) { return r.json(); })
+      : fetch(API + "/api/ask", {
+          method: "POST",
+          headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+          body: JSON.stringify({ question: question })
+        }).then(handleResponse);
+
+    request
+      .then(function (payload) { stopProgress(); renderAnswer(payload); })
+      .catch(function (err) { stopProgress(); renderError(err); });
+  }
+
+  function handleResponse(res) {
+    if (res.ok) { return res.json(); }
+    var err = new Error();
+    err.status = res.status;
+    return res.json().then(function (body) {
+      err.detail = body && (body.detail || body.message);
+      throw err;
+    }, function () { throw err; });
+  }
+
+  el("ask-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    ask(el("question").value.trim());
+  });
+
+  el("suggestions").addEventListener("click", function (ev) {
+    var chip = ev.target.closest(".chip");
+    if (chip) { ask(chip.textContent.trim()); }
+  });
+
+  el("error-retry").addEventListener("click", function () { ask(lastQuestion); });
+
+  /* ── rendering ────────────────────────────────────────────────────────── */
+
+  function toHtml(markdown) {
+    var text = markdown || "";
+    if (window.marked && window.DOMPurify) {
+      return window.DOMPurify.sanitize(window.marked.parse(text));
+    }
+    var escaped = text.replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+    return escaped.split(/\n{2,}/).map(function (p) {
+      return "<p>" + p.replace(/\n/g, "<br>") + "</p>";
+    }).join("");
+  }
+
+  function renderAnswer(payload) {
+    var head = payload.headline || {};
+    el("answer-figure").textContent = head.value || "";
+    el("answer-caption").textContent = head.caption || "";
+    el("answer-working").textContent = head.working || "";
+    el("answer-prose").innerHTML = toHtml(payload.answer_markdown);
+
+    var note = el("answer-disclaimer");
+    if (payload.degraded) {
+      note.textContent = "The model could not be reached, so this shows the cited passages and computed figures without a written explanation.";
+      note.hidden = false;
+    } else if (payload.confidence === "low") {
+      note.textContent = "Low confidence: not every figure could be traced back to a cited passage. Check the sources before using this.";
+      note.hidden = false;
+    } else if (payload.disclaimer) {
+      note.textContent = payload.disclaimer;
+      note.hidden = false;
     } else {
-      chip("bypassed — no cache read or write");
-    }
-    if (c.clock_offset_s) chip(`clock offset +${fmtDur(c.clock_offset_s)}`, "slot empty");
-    refreshCache();
-  }
-
-  document.querySelectorAll(".cache-controls [data-adv]").forEach((b) => b.onclick = async () => { await admin("/clock", { advance_seconds: Number(b.dataset.adv) }); refreshCache(); });
-  $("clock-reset").onclick = async () => { await admin("/clock", { reset: true }); refreshCache(); };
-  $("cache-sweep").onclick = async () => { const r = await admin("/cache/sweep", {}); $("cache-stats").textContent = `sweep: ${JSON.stringify(r)}`; setTimeout(refreshCache, 1200); };
-  $("cache-purge").onclick = async () => { if (!confirm("Purge every cache entry (L1 + L2)?")) return; await admin("/cache/purge", { scope: "all" }); refreshCache(); };
-  $("cache-entries-toggle").onclick = async () => { const p = $("cache-entries"); p.classList.toggle("hidden"); if (!p.classList.contains("hidden")) await loadEntries(); };
-
-  // ---- ops panel (Phase 7) ---------------------------------------------------------------
-  const fmtNum = (n) => (n == null ? "–" : n.toLocaleString());
-
-  async function loadOps() {
-    if (!adminEnabled) { $("ops-cache").textContent = "admin routes disabled (APP_ENV is not dev)"; return; }
-    let s;
-    try { s = await admin("/stats?limit=500"); } catch (e) { $("ops-cache").textContent = "unavailable: " + e.message; return; }
-    $("ops-window").textContent = s.window.traces;
-    const c = s.cache;
-    $("ops-cache").textContent =
-      `served ${c.served_requests} · hit rate ${(c.hit_rate * 100).toFixed(1)}% · admitted ${c.admitted}\n` +
-      `by tier ${JSON.stringify(c.by_tier)}\n` +
-      `window ${s.window.first_ts || "–"} → ${s.window.last_ts || "–"} · profile ${s.profile} · env ${s.app_env}`;
-    const spark = $("ops-spark"); spark.innerHTML = "";
-    for (const b of c.over_time) {
-      const bar = document.createElement("div"); bar.className = "bar";
-      bar.style.height = Math.max(2, Math.round(b.hit_rate * 50)) + "px";
-      bar.title = `${b.from_ts} → ${b.to_ts}\n${b.hits}/${b.requests} hits`;
-      bar.innerHTML = `<span>${Math.round(b.hit_rate * 100)}</span>`;
-      spark.appendChild(bar);
-    }
-    const mb = $("ops-models").querySelector("tbody"); mb.innerHTML = "";
-    for (const [role, m] of Object.entries(s.models.by_role)) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${role}</td><td>${DOMPurify.sanitize(m.model || "–")}</td><td>${fmtNum(m.calls)}</td><td>${fmtNum(m.tokens_in)}</td><td>${fmtNum(m.tokens_out)}</td><td>${fmtNum(Math.round(m.pacing_wait_ms / 1000))} s</td><td>${m.retries}</td>`;
-      mb.appendChild(tr);
-    }
-    const q = s.quality;
-    $("ops-quality").textContent =
-      `verification failures ${q.verification_failures}/${q.verified_requests} (${(q.failure_rate * 100).toFixed(1)}%) · regenerations ${q.regenerations} · pipeline errors ${q.errors}\n` +
-      `call statuses ${JSON.stringify(s.models.statuses)}` +
-      (q.last_issues.length ? "\nlast issues:\n" + q.last_issues.map((i) => `  ${i.request_id}: ${(i.issues || []).join("; ")}`).join("\n") : "");
-    const lb = $("ops-latency").querySelector("tbody"); lb.innerHTML = "";
-    const l = s.latency;
-    for (const [node, v] of Object.entries(l.by_node)) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${node}</td><td>${v.n}</td><td>${v.p50 ?? "–"}</td><td>${v.p95 ?? "–"}</td>`;
-      lb.appendChild(tr);
-    }
-    const tr = document.createElement("tr"); tr.className = "expanded";
-    tr.innerHTML = `<td><b>total</b></td><td>–</td><td>${l.total_p50 ?? "–"}</td><td>${l.total_p95 ?? "–"}</td>`;
-    lb.appendChild(tr);
-    const cp = s.compression;
-    $("ops-compression").textContent =
-      `${cp.requests} logged requests · actions ${JSON.stringify(cp.actions)}\n` +
-      `compressor calls ${cp.compressor_calls} · fidelity reverts ${cp.fidelity_reverts}\n` +
-      `context tokens ${fmtNum(cp.context_tokens_before)} → ${fmtNum(cp.context_tokens_after)} (${cp.tokens_saved_pct}% saved)`;
-    $("ops-process").textContent =
-      `cache-hit p50 ${l.cache_hit_p50 ?? "–"} ms · miss p50 ${l.cache_miss_p50 ?? "–"} ms\n` +
-      `RSS last ${s.memory.rss_mb_last ?? "–"} MB · peak ${s.memory.rss_mb_peak ?? "–"} MB · corpus ${s.corpus_version}`;
-  }
-
-  $("ops-refresh").onclick = loadOps;
-  $("ops-toggle").onclick = () => {
-    const b = $("ops-body"); b.classList.toggle("hidden");
-    $("ops-toggle").textContent = b.classList.contains("hidden") ? "show" : "hide";
-    if (!b.classList.contains("hidden")) loadOps();
-  };
-
-  function citeHtml(md) {
-    // [C1] / [K2] → clickable chips (after markdown so the brackets survive)
-    return md.replace(/\[([CK]\d+)\]/g, '<span class="cite" data-block="$1">$1</span>');
-  }
-
-  function openModal(title, src) {
-    modalTitle.textContent = title; modalImg.src = src; modal.classList.remove("hidden");
-  }
-  $("modal-close").onclick = () => modal.classList.add("hidden");
-  modal.onclick = (e) => { if (e.target === modal) modal.classList.add("hidden"); };
-
-  function showCitation(blockId) {
-    if (!last) return;
-    const c = last.citations.concat(last.figures).find((x) => x.block_id === blockId)
-      || last.debug.context_blocks.map(b => ({ block_id: b.block_id, page: b.page, label: b.header.replace(/^\[|\]$/g, ""), page_image_url: b.page ? `/api/pages/${b.page}` : null })).find((x) => x.block_id === blockId);
-    if (!c) return;
-    if (c.figure_image_url) openModal(c.label, c.figure_image_url);
-    else if (c.page_image_url) openModal(c.label, c.page_image_url);
-  }
-
-  function render(resp) {
-    last = resp;
-    result.classList.remove("hidden");
-    const tierEl = $("cache-tier"); tierEl.textContent = "cache: " + resp.cache_tier; tierEl.className = "badge " + resp.cache_tier;
-    renderCacheRequest(resp);
-    $("intent").textContent = resp.debug.intent;
-    const conf = $("confidence"); conf.textContent = "confidence: " + resp.answer.confidence; conf.className = "badge " + resp.answer.confidence;
-    $("answer-class").textContent = resp.answer.answer_class;
-    $("latency").textContent = `${resp.debug.total_latency_ms} ms · ${resp.debug.generation_attempts} generation attempt(s) · ${resp.debug.generator_role} role`;
-    const warn = $("warning");
-    if (resp.warning) { warn.textContent = resp.warning; warn.classList.remove("hidden"); } else { warn.classList.add("hidden"); }
-    // Phase 8 degrade mode: the answer is a retrieval-only view (no model), never cached.
-    warn.classList.toggle("degraded", !!resp.degraded);
-    if (resp.degraded) conf.textContent = "degraded · retrieval-only view";
-
-    let html = DOMPurify.sanitize(marked.parse(resp.answer.answer_markdown));
-    html = citeHtml(html);
-    if (resp.answer.fiscal_year_interpretation) html += `<p class="meta">Fiscal-year interpretation: ${DOMPurify.sanitize(resp.answer.fiscal_year_interpretation)}</p>`;
-    answerEl.innerHTML = html;
-    answerEl.querySelectorAll(".cite").forEach((el) => el.onclick = () => showCitation(el.dataset.block));
-
-    figuresEl.innerHTML = "";
-    for (const f of resp.figures) {
-      const fig = document.createElement("figure");
-      const img = document.createElement("img"); img.src = f.figure_image_url; img.alt = f.label;
-      img.onclick = () => openModal(f.label, f.figure_image_url);
-      const cap = document.createElement("figcaption"); cap.textContent = `${f.block_id} · ${f.label}`;
-      fig.append(img, cap); figuresEl.appendChild(fig);
+      note.hidden = true;
     }
 
-    citesEl.innerHTML = "";
-    for (const c of resp.citations) {
-      const chip = document.createElement("span"); chip.className = "chip";
-      chip.innerHTML = `<b>${c.block_id}</b> ${DOMPurify.sanitize(c.label)}`;
-      chip.onclick = () => showCitation(c.block_id);
-      citesEl.appendChild(chip);
-    }
-
-    // debug panel v2 — query understanding (Phase 4)
-    const d = resp.debug, sl = d.slots;
-    const slotsEl = $("slots"); slotsEl.innerHTML = "";
-    const slotRows = [
-      ["entity", sl.entity], ["periods", sl.fiscal_periods.join(", ")], ["metrics", sl.metrics.join(", ")],
-      ["formulas", sl.formulas.join(", ")], ["statement", sl.statement ? `${sl.statement} (${sl.statement_source})` : ""],
-      ["direction", sl.direction], ["aggregation", sl.aggregation.join(", ")], ["time anchor", sl.time_anchor ? "yes" : ""],
-    ];
-    for (const [k, v] of slotRows) {
-      const span = document.createElement("span"); span.className = "slot" + (v ? "" : " empty");
-      span.innerHTML = `<b>${k}</b> ${DOMPurify.sanitize(v || "–")}`; slotsEl.appendChild(span);
-    }
-    if (sl.period_note) { const n = document.createElement("span"); n.className = "slot"; n.textContent = sl.period_note; slotsEl.appendChild(n); }
-    const sc = d.scope;
-    $("scope").textContent = `${sc.in_scope ? "IN SCOPE" : "OUT OF SCOPE"} · score ${sc.score} · rule ${sc.rule || "none"} · decided by ${sc.source}${sc.llm_called ? " (small model called)" : ""}\n${sc.reason}`;
-    const an = d.analysis;
-    $("analysis").textContent = `intent ${an.intent} · confidence ${an.confidence.toFixed(2)} · decided by ${an.source} · rule "${an.rule}"` +
-      (an.llm_called ? `\nsmall model called: intent ${an.llm_intent || "?"} · paraphrases ${an.paraphrases.length} · sub-questions ${an.sub_questions.length} · section hints ${an.section_hints.join(", ") || "none"}` : "\nno model call (rule-confident)") +
-      (an.hyde_passage ? `\nHyDE: ${an.hyde_passage}` : (an.hyde_rejected ? "\nHyDE rejected (contained digits) and dropped" : "")) +
-      (an.notes.length ? `\nnotes: ${an.notes.join(" | ")}` : "");
-    const qb = $("queries-table").querySelector("tbody"); qb.innerHTML = "";
-    const retried = d.retrieval.filtered_retries || [];
-    an.queries.forEach((q, i) => {
-      const tr = document.createElement("tr");
-      const f = q.where ? JSON.stringify(q.where).replace(/"/g, "") + (retried.includes(i) ? " → < 3 results, retried unfiltered" : "") : "–";
-      tr.innerHTML = `<td>${q.kind}</td><td class="wrap">${DOMPurify.sanitize(q.text)}</td><td class="wrap">${DOMPurify.sanitize(f)}</td>`;
-      qb.appendChild(tr);
-    });
-    const rr = d.rerank;
-    $("rerank").textContent = rr.applied
-      ? `RERANKED with ${rr.model} · kept ${rr.kept} · dropped ${rr.dropped.length ? rr.dropped.join(", ") : "none"} · ${rr.latency_ms} ms`
-      : `SKIPPED · gate ${rr.gate || "-"}\n${rr.skip_reason || ""}` + (rr.required_metrics.length ? `\nrequired metrics: ${rr.required_metrics.join(", ")}` : "");
-
-    // debug panel v3 — compression (Phase 5)
-    const cp = d.compression || {};
-    $("compression").textContent = !cp.enabled
-      ? `OFF (${cp.mode})`
-      : (cp.query_needs_compression
-        ? `COMPRESSED · ${cp.tokens_before} → ${cp.tokens_after} tokens · actions ${JSON.stringify(cp.actions)} · small-model calls ${cp.llm_calls} · violations ${cp.violations.length ? cp.violations.join(" | ") : "none"} · ${cp.latency_ms} ms`
-        : `NOT NEEDED · ${cp.skip_reason || "every chunk kept"} · ${cp.tokens_before} tokens · ${cp.latency_ms} ms`)
-      + (cp.query ? `\nbudget ratio ${cp.query.budget_ratio} · ${cp.query.n_chunks} chunks · ${cp.query.total_tokens} tokens · intent ${cp.query.intent}` : "");
-    const cb = $("compression-table").querySelector("tbody"); cb.innerHTML = "";
-    (cp.chunks || []).forEach((c) => {
-      const tr = document.createElement("tr"); if (c.applied === "DEDUPE" || c.applied === "DROP") tr.className = "expanded";
-      const fid = c.fidelity_ok == null ? "–" : (c.fidelity_ok ? "✓" : "✗ reverted");
-      tr.innerHTML = `<td>${c.chunk_id}</td><td>${c.modality}</td><td>${c.action}</td><td>${c.applied}${c.reverted ? " (reverted)" : ""}</td><td>${c.tokens_before}→${c.tokens_after}</td><td>${c.relevance_density}</td><td>${c.max_dup_sim > 0 ? c.max_dup_sim.toFixed(2) : "–"}</td><td>${fid}</td><td class="wrap">${DOMPurify.sanitize(c.reason)}${c.note ? " · " + DOMPurify.sanitize(c.note) : ""}</td>`;
-      cb.appendChild(tr);
+    var cites = el("citations");
+    cites.innerHTML = "";
+    (payload.citations || []).forEach(function (c) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "citation";
+      b.textContent = c.label + (c.page ? ", page " + c.page : "");
+      if (c.page) { b.addEventListener("click", function () { openPage(c); }); }
+      cites.appendChild(b);
     });
 
-    const inCtx = new Set(d.context_blocks.map((b) => b.chunk_id));
-    const tbody = $("retrieval-table").querySelector("tbody"); tbody.innerHTML = "";
-    d.candidates.forEach((c, i) => {
-      const tr = document.createElement("tr"); if (c.source === "expanded") tr.className = "expanded";
-      const dense = c.dense_rank ? `#${c.dense_rank} (${c.dense_score})` : "–";
-      const bm25 = c.bm25_rank ? `#${c.bm25_rank} (${c.bm25_score})` : "–";
-      const rers = c.rerank_score != null ? `#${c.rerank_rank} (${c.rerank_score.toFixed(2)})` : "–";
-      tr.innerHTML = `<td>${i + 1}</td><td>${c.chunk_id}</td><td>${c.modality}</td><td>${c.page}</td><td>${dense}</td><td>${bm25}</td><td>${c.rrf.toFixed(4)}</td><td>${rers}</td><td>${(c.hit_by || []).join(",") || "–"}</td><td>${inCtx.has(c.chunk_id) ? "✓" : ""}</td>`;
-      tbody.appendChild(tr);
+    var body = el("figures-body");
+    body.innerHTML = "";
+    var figures = payload.figures_used || [];
+    el("figures-table").hidden = figures.length === 0;
+    figures.forEach(function (f) {
+      var tr = document.createElement("tr");
+      var label = document.createElement("td");
+      label.textContent = f.label;
+      var value = document.createElement("td");
+      value.textContent = f.value + (f.unit ? " " + f.unit : "");
+      tr.appendChild(label);
+      tr.appendChild(value);
+      body.appendChild(tr);
     });
-    $("calc").textContent = resp.debug.calculations.length
-      ? resp.debug.calculations.map((k) => `${k.formula} (FY${k.fiscal_year}${k.metric ? ", " + k.metric : ""}): ${k.status === "ok" ? k.rounded : k.status + " — " + k.message}\n` + k.inputs.map((i) => `   ${i.name} = ${i.value} ← ${i.chunk_id} p.${i.page}`).join("\n")).join("\n\n")
-      : "(no calculation for this intent)";
-    const v = resp.debug.verify;
-    $("verify").textContent = `passed: ${v.passed}\nnumbers checked: ${v.numbers_checked}\nunmatched: ${v.unmatched_numbers.join(", ") || "none"}\ninvalid citations: ${v.invalid_citations.join(", ") || "none"}\nissues: ${v.issues.join(" | ") || "none"}`;
-    const tokens = Object.entries(resp.debug.tokens_by_model).map(([m, t]) => `${m}: in ${t.in} · out ${t.out} · calls ${t.calls}${t.pacing_wait_ms ? ` · pacing wait ${t.pacing_wait_ms} ms` : ""}`).join("\n") || "no model calls";
-    const lat = Object.entries(resp.debug.latency_ms_by_node).map(([n, ms]) => `${n} ${ms} ms`).join(" · ");
-    $("tokens").textContent = `${tokens}\n${lat}\ntotal ${resp.debug.total_latency_ms} ms · context ${resp.debug.context_tokens}/${resp.debug.context_budget} tokens · dropped ${resp.debug.dropped.length}`;
-    $("ctx-tokens").textContent = resp.debug.context_tokens;
-    const blocks = $("context-blocks"); blocks.innerHTML = "";
-    for (const b of resp.debug.context_blocks) {
-      const div = document.createElement("div"); div.className = "block";
-      div.innerHTML = `<div class="hdr">${DOMPurify.sanitize(b.header)} · ${b.token_count} tok${b.compression ? " · " + b.compression : ""}</div><div class="body">${DOMPurify.sanitize(b.text)}</div>`;
-      blocks.appendChild(div);
+
+    renderRail(payload.trace || {});
+    only("state-answer");
+    el("rail").hidden = false;
+  }
+
+  function renderRail(trace) {
+    var total = el("rail-total");
+    total.textContent = trace.total_seconds ? trace.total_seconds.toFixed(1) + "s" : "";
+    total.hidden = !trace.total_seconds;
+
+    var steps = trace.steps && trace.steps.length ? trace.steps : buildSteps(trace);
+    var list = el("steps");
+    list.innerHTML = "";
+
+    steps.forEach(function (s) {
+      var li = document.createElement("li");
+      li.className = "step" + (s.kind === "computed" ? " step--computed" : s.kind === "checked" ? " step--checked" : "");
+
+      var head = document.createElement("div");
+      head.className = "step__head";
+      var label = document.createElement("span");
+      label.textContent = s.label;
+      head.appendChild(label);
+      if (s.seconds || s.note) {
+        var time = document.createElement("span");
+        time.className = "step__time";
+        time.textContent = s.note || (s.seconds.toFixed(2) + "s");
+        head.appendChild(time);
+      }
+      li.appendChild(head);
+
+      if (s.detail) {
+        var p = document.createElement("p");
+        p.className = "step__body";
+        p.textContent = s.detail;
+        li.appendChild(p);
+      }
+
+      if (s.tags && s.tags.length) {
+        var tags = document.createElement("div");
+        tags.className = "step__tags";
+        s.tags.forEach(function (t) {
+          var span = document.createElement("span");
+          span.className = "tag";
+          span.textContent = t;
+          tags.appendChild(span);
+        });
+        li.appendChild(tags);
+      }
+
+      list.appendChild(li);
+    });
+
+    var foot = el("rail-foot");
+    if (trace.tokens) {
+      foot.textContent = trace.tokens["in"] + " tokens in, " + trace.tokens.out + " out, billed to your key.";
+      foot.hidden = false;
+    } else {
+      foot.hidden = true;
     }
-    $("request-id").textContent = resp.request_id;
-    $("trace-link").href = `/api/trace/${resp.request_id}`;
-    $("corpus-version").textContent = resp.debug.corpus_version;
   }
 
-  async function ask(question) {
-    submit.disabled = true; submit.textContent = "Thinking…";
-    try {
-      const r = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question, bypass_cache: bypass.checked }) });
-      if (!r.ok) { const t = await r.text(); throw new Error(`${r.status}: ${t}`); }
-      render(await r.json());
-    } catch (e) {
-      result.classList.remove("hidden");
-      answerEl.textContent = "Request failed: " + e.message;
-    } finally { submit.disabled = false; submit.textContent = "Ask"; }
+  function buildSteps(trace) {
+    var steps = [];
+    var tier = trace.cache_tier || "miss";
+
+    steps.push({
+      label: "Memory checked",
+      note: tier === "miss" ? "no match" : tier + " hit",
+      detail: tier === "miss"
+        ? "No stored answer matched on period, metric and formula. Similarity alone is never enough to reuse one."
+        : "A stored answer matched on every guard key, so no model was called."
+    });
+
+    if (trace.slots) {
+      steps.push({
+        label: "Question read",
+        tags: Object.keys(trace.slots).map(function (k) { return trace.slots[k]; }).filter(Boolean)
+      });
+    }
+    if (trace.retrieval) {
+      steps.push({ label: "Passages found", seconds: trace.retrieval.seconds, detail: trace.retrieval.detail });
+    }
+    if (trace.compression) {
+      steps.push({ label: "Context trimmed", seconds: trace.compression.seconds, detail: trace.compression.detail });
+    }
+    if (trace.calculator) {
+      steps.push({ label: "Arithmetic in code", note: "exact", detail: trace.calculator.detail, kind: "computed" });
+    }
+    if (trace.generation) {
+      steps.push({ label: "Explanation written", seconds: trace.generation.seconds, detail: trace.generation.detail });
+    }
+    if (trace.verified !== undefined) {
+      steps.push({
+        label: trace.verified ? "Every number checked" : "Check incomplete",
+        kind: "checked",
+        detail: trace.verified
+          ? "Each figure traces back to a cited passage or to the calculator."
+          : "At least one figure could not be traced. Treat this answer with care."
+      });
+    }
+    return steps;
   }
 
-  form.onsubmit = (e) => { e.preventDefault(); const q = qEl.value.trim(); if (q) ask(q); };
-  qEl.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } };
-  $("examples").querySelectorAll("button").forEach((b) => b.onclick = () => { qEl.value = b.dataset.q; form.requestSubmit(); });
-  checkReady();
+  function renderError(err) {
+    var title = "Something went wrong";
+    var body = err.detail || "The request did not complete. Try again.";
+    var offerKey = false;
+
+    if (err.status === 401 || err.status === 403) {
+      title = "That key was rejected";
+      body = "The provider turned the key down. Paste it again, or switch provider.";
+      offerKey = true;
+    } else if (err.status === 402) {
+      title = "The key has no credit left";
+      body = "Top up the account behind this key, or switch to another provider.";
+      offerKey = true;
+    } else if (err.status === 429) {
+      title = "Rate limit reached";
+      body = "The provider is throttling this key. Wait about a minute and ask again.";
+    } else if (err.status === 502 || err.status === 503 || err.status === 504) {
+      title = "The server is still waking up";
+      body = "Free hosting puts it to sleep after a quiet spell. Give it a few seconds and try again.";
+    } else if (!err.status) {
+      title = "No connection";
+      body = "The page could not reach the server. Check your network and try again.";
+    }
+
+    el("error-title").textContent = title;
+    el("error-body").textContent = body;
+    el("error-key").hidden = !offerKey;
+    only("state-error");
+  }
+
+  /* ── page viewer ──────────────────────────────────────────────────────── */
+
+  var viewer = el("viewer");
+
+  function openPage(citation) {
+    el("viewer-title").textContent = citation.label + ", page " + citation.page;
+    var img = el("viewer-img");
+    img.src = API + "/api/pages/" + citation.page;
+    img.alt = "Page " + citation.page + " of the filing";
+    if (typeof viewer.showModal === "function") { viewer.showModal(); }
+  }
+
+  el("viewer-close").addEventListener("click", function () { viewer.close(); });
+  viewer.addEventListener("click", function (ev) { if (ev.target === viewer) { viewer.close(); } });
+
+  /* ── start ────────────────────────────────────────────────────────────── */
+
+  loadKey();
+  only("state-empty");
+  if (session.key) { showWorkspace(); } else { el("api-key").focus(); }
 })();
