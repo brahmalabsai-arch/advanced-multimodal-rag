@@ -1,0 +1,43 @@
+{
+  "answer_markdown": "Total current assets of **$125,605 million** cover total current liabilities of **$32,163 million** almost four times over, leaving working capital of **$93,442 million**.\n\nCash and marketable securities alone come to $62,556 million, so the ratio does not depend on inventory or receivables converting quickly.",
+  "headline": {
+    "value": "3.91",
+    "caption": "current ratio, as of 25 January 2026 (FY2026)",
+    "working": "125,605 / 32,163 — USD millions"
+  },
+  "figures_used": [
+    { "label": "Total current assets", "value": "125,605" },
+    { "label": "Total current liabilities", "value": "32,163" },
+    { "label": "Cash and cash equivalents", "value": "10,605" },
+    { "label": "Marketable securities", "value": "51,951" }
+  ],
+  "citations": [
+    { "label": "Consolidated Balance Sheets", "page": 141 },
+    { "label": "Notes to the financial statements", "page": 148 }
+  ],
+  "confidence": "high",
+  "degraded": false,
+  "trace": {
+    "cache_tier": "miss",
+    "model": "llama-3.3-70b",
+    "total_seconds": 4.8,
+    "verified": true,
+    "tokens": { "in": 2140, "out": 260 },
+    "slots": { "entity": "NVIDIA", "period": "FY2026", "formula": "current_ratio" },
+    "retrieval": {
+      "seconds": 0.31,
+      "detail": "Meaning search and keyword search merged; 8 blocks kept from 60. The glossary added two rephrasings of the question."
+    },
+    "compression": {
+      "seconds": 0.02,
+      "detail": "2 duplicate passages dropped; the balance sheet cut to 6 relevant rows. No digits were altered."
+    },
+    "calculator": {
+      "detail": "current_ratio = 125,605 / 32,163"
+    },
+    "generation": {
+      "seconds": 4.3,
+      "detail": "2,140 tokens in, 260 out, billed to your key."
+    }
+  }
+}
