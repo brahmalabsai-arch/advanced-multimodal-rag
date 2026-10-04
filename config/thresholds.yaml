@@ -41,6 +41,9 @@ compression:                       # architecture §6; Phase 5
   stage_b: rules                   # rules | learned (Stage C, §6.7). `learned` scores
                                    # src/rag/compress/classifier_weights.json with NumPy; Phase 7
                                    # measured it against the rules — see docs/reports/stage_c_classifier.md
+completeness:                      # query/coverage.py: after verification, did the answer cover every ask?
+  enabled: true                    # rules over slots + calculations (free, deterministic)
+  self_check: true                 # plus one small-model call when the question has several asks
 cache:                             # architecture §5; Phase 6
   enabled: true                    # false = every request runs the pipeline (cache_tier "bypassed")
   l1: {max_entries: 512, ttl_seconds: 3600, policy: lru}

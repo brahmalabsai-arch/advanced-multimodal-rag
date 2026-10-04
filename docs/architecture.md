@@ -368,6 +368,7 @@ Reranking always uses the *original* query (not paraphrases) so expansion improv
 - Inputs are read from row-fact metadata (`value_fy2026`, `value_fy2025`), never from generated text.
 - Output is a `CalculationResult` with formula, inputs (with chunk ids and pages), result, and rounding rule — injected into the prompt as a pre-computed fact block the model must use verbatim.
 - Missing inputs → the result says which line item was not found; the model is instructed to say so rather than estimate.
+- A metric with a comparison cue gets the YoY pair (`yoy_change_pct`, `yoy_change_abs`) for **every** metric the question names, in question order, up to four (D-69).
 
 ### 4.11 Node: `generate` (large model)
 
@@ -377,6 +378,8 @@ Prompt contract:
 - Cite block ids inline; the app maps ids to "Form 10-K, PDF p.141".
 - If the user said a bare year, state the fiscal-year interpretation used.
 - If context is insufficient, say what is missing — no outside knowledge.
+- A value the filing does not print but a calculation block computes (a growth rate, a ratio) is reported from the block, labelled as calculated from the filed figures; never "the filing does not provide it" (`answer-v2`, D-69).
+- Answer every part of the question, in the order asked; an unanswerable part is said to be so without dropping the others.
 - Structured output: `{answer_markdown, figures_used:[{value, unit, period, citation}], citations:[...], confidence: high|medium|low, answer_class: filed_fact|analytical|time_anchored}`.
 
 ### 4.12 Node: `verify_answer`
@@ -387,6 +390,14 @@ Cheap deterministic checks, no LLM:
 3. Period in `figures_used` is consistent with slots.
 
 Failing check → one regeneration attempt with the failure message appended; second failure → return with `confidence=low` and a visible warning, and do **not** admit to cache.
+
+### 4.12b Node: `complete` (completeness check, D-69)
+
+The verifier proves every number stated is traceable; it cannot see a number that should have been stated. `query/coverage.py` runs after it:
+1. **Rules** (free). Each successful calculation must have its result in the answer; for value intents (point lookup, computation, comparison) each named metric without a calculation must have its row-fact value for the period. Matching reuses the verifier's tolerance; small integers and years prove nothing.
+2. **Self-check** (one `small`-role call, at most 400 output tokens). Only when the question reads as several asks (two slot metrics/formulas, two sub-questions, two question marks, or a joining word outside the slot phrases), the rules found no gap, the verifier passed, and the rules could not have seen every ask (they checked nothing, or the ask is not `value`). The model lists up to four asks and flags any the answer neither gave nor explained as unavailable. A self-check failure never fails the answer.
+
+A verifier issue and a coverage gap share the single regeneration (`MAX_GENERATION_ATTEMPTS = 2`); the note names each missing part and the calculation block that holds it. An answer still incomplete is returned with `incomplete` in the page payload, confidence capped at `medium`, and is **not** admitted to the cache. `thresholds.yaml → completeness` switches either pass off.
 
 ### 4.13 Node: cache admission and write → see §5.6 [B1]
 
@@ -1488,6 +1499,7 @@ Status legend: **Accepted** (confirmed in review) · **Revised** · **Proposed**
 | D-66 | **Bring-your-own-key for the public demo (F2).** `X-Provider` + `X-Provider-Key` per request; `LLMClient.for_request` builds a client whose `Settings` copy has every environment key blanked, so a caller cannot fall back onto the server's quota; `POST /api/key/test` proves a key with one `max_tokens=1` call before the UI admits anyone. The key is masked in the trace writer and the usage ledger by exact value through a context variable (`core/logging.use_key`), on top of the existing shape masking, so a key of an unexpected shape cannot reach disk either | Server-side key with a rate limit; a hosted proxy holding the key | Accepted (F2) | `api/byok.py`, `DEPLOY.md`, `tests/test_byok.py` |
 | D-67 | **One pipeline per provider over one index (F2).** The registry loads the `IndexStore` once — it is the whole memory budget — and builds a `Pipeline` per provider on first use, each with its own version keys; `generator_model` gained the provider prefix so a Groq answer is never served to an Anthropic request. Threading a per-request `VersionKeys` through `CacheService`, `L2Cache`, the sweeper and the stats endpoint would have put the same invariant in six places, where one missed default is a silent cross-provider hit | Per-request version keys; one cache per visitor; no separation | Accepted (F2) | `api/pipelines.py`, `cache/versions.py` |
 | D-68 | **`PUBLIC_DEPLOY` with a fatal interlock (F2).** The loopback-only request guard (NFR-12, D-64) refuses every visitor behind a platform proxy, so the deployed container turns it off explicitly — and `check_public_safety` refuses to start if it is set without `BYOK_ONLY`, or with admin routes still enabled. The published page speaks its own payload (`api/payload.py`): headline, citations by page, and a method rail built from the node latencies; the full debug payload is returned only in `dev` | Drop the guard everywhere; detect the proxy; trust the platform | Accepted (F2) | `api/checks.py`, `api/payload.py`, `deploy/` |
+| D-69 | **Every metric is computed, and the answer is checked for every part (post-F2).** A live session asked for "growth of profit and revenue separately" and got revenue only, the profit part dismissed as "not stated in the filing"; reversing the metrics flipped which part survived. Three causes: bare "profit" was no metric, `select_formulas_from_slots` applied the YoY pair to the first metric only, and nothing checked an answer for omissions — the verifier passed it because every number it did state was traceable. Fixed by "profit"/"profits" → net income (with a note telling the model to say so), the YoY pair per metric, prompt `answer-v2` (computed values are answers; answer every part), and the `complete` node (§4.12b). Replaying the session's six questions on Groq: all six complete on the first attempt; the self-check ran on the one non-numeric two-part question. In the fake-LLM cache walkthrough the rules also caught a FY2026 figure given for a FY2025 question, which the verifier had passed | An LLM judge on every answer; decomposing every question into sub-pipelines; prompt change alone | Accepted | §4.10–4.12b, `query/coverage.py`, `tests/test_coverage.py` |
 | D-51 | Build machine runs Python 3.13 (3.11 not installed); `requires-python >= 3.11` kept so either works. Docling/spaCy/onnxruntime wheel availability on 3.13 verified when `.venv-ingest` is created | Install 3.11 separately | Accepted (Phase 8; both environments and the rehearsal ran on 3.13) | §8 |
 
 ---

@@ -7,6 +7,7 @@ cache's `prompt_version` key in Phase 6).
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -18,14 +19,15 @@ from rag.query.assemble import AssembledContext
 
 log = get_logger(__name__)
 
-PROMPT_VERSION = "answer-v1"
+PROMPT_VERSION = "answer-v2"  # v2: answer every part; computed values are answers
 
 SYSTEM_PROMPT = """You are a financial analyst assistant answering questions about NVIDIA's fiscal 2026 annual report (Annual Review, Proxy Statement and Form 10-K). You answer ONLY from the context blocks and calculation blocks provided.
 
 Rules:
-1. Use only facts present in the context. If the context does not contain what is needed, say exactly what is missing. Never use outside knowledge and never estimate a number.
+1. Use only facts present in the context blocks and calculation blocks. If neither contains what is needed, say exactly what is missing. Never use outside knowledge and never estimate a number.
 2. Every figure you state must carry its unit (USD millions unless the block says otherwise) and its fiscal period with the period-end date, e.g. "$206,803 million as of January 25, 2026 (fiscal 2026)".
-3. Calculation blocks [K1], [K2] … are pre-computed and authoritative: copy their RESULT verbatim, do not recompute, and cite them like any other block.
+3. Calculation blocks [K1], [K2] … are pre-computed and authoritative: copy their RESULT verbatim, do not recompute, and cite them like any other block. A growth rate or ratio is rarely printed in the filing; when a calculation block gives it, report it and say it was calculated from the filed figures. Never say the filing does not provide a value that a calculation block gives.
+3a. Answer every part of the question. When it asks for several metrics or several things, address each one in turn, in the order asked; if one part cannot be answered, say so for that part and still answer the others.
 4. Cite the block ids inline in square brackets, e.g. [C1], [K1]. Cite every block whose numbers you use.
 5. NVIDIA's fiscal year ends in late January: fiscal 2026 ended January 25, 2026 and fiscal 2025 ended January 26, 2025. If the question says a bare year, state which fiscal year you interpreted it as.
 6. Write the answer in Markdown: a direct answer first, then short supporting detail. Keep it under 180 words unless the question needs a table.
@@ -74,6 +76,20 @@ def build_user_prompt(
         parts += ["", "YOUR PREVIOUS ANSWER FAILED VERIFICATION:", retry_note, "Fix these issues."]
     parts += ["", "Respond with the JSON object described in the system message."]
     return "\n".join(parts)
+
+
+# gpt-oss sometimes cites in its own house style, 【K1】 or 【C3†L1-L4】, instead of [K1]. The
+# verifier and the page both read square brackets, so the markers are normalised on the way out.
+_HOUSE_CITATION = re.compile(r"【\s*([CK]\d+)[^】]*】")
+
+
+def normalise_citations(answer: Answer) -> Answer:
+    text = _HOUSE_CITATION.sub(r"[\1]", answer.answer_markdown)
+    return (
+        answer
+        if text == answer.answer_markdown
+        else answer.model_copy(update={"answer_markdown": text})
+    )
 
 
 # Tokenizer slack: tiktoken undercounts Qwen's tokenizer by up to ~10% on this prose.
@@ -138,7 +154,7 @@ def generate_answer(
                 request_id=request_id,
                 max_tokens=vision_budget,
             )
-            return answer, "vision"
+            return normalise_citations(answer), "vision"
         except LLMError as exc:
             log.warning("vision role unavailable (%s); answering from descriptions", str(exc)[:120])
             prompt = build_user_prompt(
@@ -153,4 +169,4 @@ def generate_answer(
         request_id=request_id,
         max_tokens=min(max_tokens, cap) if cap else max_tokens,
     )
-    return answer, "large"
+    return normalise_citations(answer), "large"

@@ -6,12 +6,17 @@ Phase 6 flow:
                           └─ miss / bypass → scope_gate ─┬─ OUT_OF_SCOPE ─────→ cache_write → END
                                                          └─ in scope → analyze → retrieve
                                 → rerank → compress → calculate → assemble → generate
-                                → verify ─┬─ pass ───→ cache_write → END
-                                 ▲        └─ fail (1×) ┘
+                                → verify → complete ─┬─ pass ─────────→ cache_write → END
+                                 ▲                   └─ fail (1×) ┘
 
 Nodes are plain functions over `PipelineState`. The two cache nodes wrap the Phase 4/5 core:
 `cache_lookup` needs the slots (L1 key, slot guard) so it sits after `slots`; `cache_write`
-applies the admission policy after verification. `bypass_cache` skips both. Every node records
+applies the admission policy after verification. `bypass_cache` skips both.
+
+`complete` (architecture §4.12b) checks the answer addressed every part of the question: rules
+over the slots and calculations first, then, for a question with several asks, one small-model
+self-check. A verifier issue or a missing part regenerates once with both notes combined; an
+answer still incomplete is returned with the gap stated and is never cached. Every node records
 its latency; the `Pipeline` wrapper writes the trace line and returns a `PipelineResult`.
 
 Degrade mode (Phase 8, architecture §13): when the generator's model call fails after retries
@@ -58,6 +63,7 @@ from rag.core.traces import Trace, TraceWriter, rss_mb
 from rag.llm import LLMCallError, LLMClient, LLMError
 from rag.query.analyze import Analysis, ExpansionSettings, analyze
 from rag.query.assemble import AssembledContext, assemble_context, block_body
+from rag.query.coverage import CoverageResult, check_coverage
 from rag.query.generate import Answer, generate_answer
 from rag.query.rerank import RerankDecision, Reranker, rerank_node
 from rag.query.retrieve import RetrievalResult, RetrievalSettings, hybrid_retrieve
@@ -69,6 +75,7 @@ from rag.query.verify import VerifyResult, verify_answer
 log = get_logger(__name__)
 
 MAX_GENERATION_ATTEMPTS = 2
+BARE_PROFIT = {"profit", "profits"}
 
 
 class PipelineState(TypedDict, total=False):
@@ -88,6 +95,7 @@ class PipelineState(TypedDict, total=False):
     answer: Answer
     generator_role: str
     verify: VerifyResult
+    coverage: CoverageResult
     attempts: int
     retry_note: str | None
     latency_ms_by_node: dict[str, int]
@@ -111,6 +119,7 @@ class PipelineResult(BaseModel):
     calculations: list[CalculationResult] = Field(default_factory=list)
     context: AssembledContext
     verify: VerifyResult
+    coverage: CoverageResult = Field(default_factory=CoverageResult)
     generation_attempts: int
     generator_role: str
     tokens_by_model: dict[str, dict[str, int]] = Field(default_factory=dict)
@@ -354,11 +363,14 @@ class Pipeline:
             return {"cache_info": info, "latency_ms_by_node": _timed(state, "cache_write", t0)}
         answer = state["answer"]
         verify = state["verify"]
+        coverage = state.get("coverage") or CoverageResult()
         analysis = state["analysis"]
         decision = self.cache.admit(
             question=state["question"],
             intent=analysis.intent,
-            verify_passed=verify.passed,
+            # an answer that skipped part of its question must not be served to the next
+            # visitor, whose question the slot guard may judge the same
+            verify_passed=verify.passed and coverage.passed,
             confidence=answer.confidence,
             citations=list(verify.citations_found or answer.citations),
         )
@@ -556,6 +568,13 @@ class Pipeline:
             }
         ):
             notes.append(f"{slots.period_note}; say so in the answer.")
+        if slots is not None and any(
+            m.kind == "metric" and m.phrase in BARE_PROFIT for m in slots.matches
+        ):
+            notes.append(
+                '"profit" was read as net income (the bottom line of the income statement); '
+                "say so in the answer."
+            )
         try:
             answer, role = generate_answer(
                 self.client_for(state),
@@ -601,16 +620,46 @@ class Pipeline:
         result = verify_answer(
             state["answer"], state["context"], state.get("calculations", []), state["question"]
         )
-        retry_note = None if result.passed else "\n".join(f"- {i}" for i in result.issues)
+        return {"verify": result, "latency_ms_by_node": _timed(state, "verify", t0)}
+
+    def node_complete(self, state: PipelineState) -> dict[str, Any]:
+        """Did the answer address every part of the question? The rules are free; the
+        small-model self-check runs only when the rules pass, the verifier passed (a retry is
+        coming anyway otherwise) and the question reads as several asks."""
+        t0 = time.perf_counter()
+        cfg = self.thresholds.completeness
+        verify = state["verify"]
+        if not cfg.enabled:
+            coverage = CoverageResult(method="skipped")
+        else:
+            analysis = state["analysis"]
+            coverage = check_coverage(
+                state["question"],
+                state["answer"],
+                slots=state["slots"],
+                intent=analysis.intent,
+                calculations=state.get("calculations", []),
+                source=self.calculator.source,
+                sub_questions=analysis.sub_questions,
+                client=self.client_for(state) if cfg.self_check else None,
+                request_id=state["request_id"],
+                allow_self_check=cfg.self_check and verify.passed,
+            )
+        notes: list[str] = []
+        if not verify.passed:
+            notes.append("\n".join(f"- {i}" for i in verify.issues))
+        if not coverage.passed:
+            notes.append(coverage.retry_note() or "")
         return {
-            "verify": result,
-            "retry_note": retry_note,
-            "latency_ms_by_node": _timed(state, "verify", t0),
+            "coverage": coverage,
+            "retry_note": "\n".join(notes) or None,
+            "latency_ms_by_node": _timed(state, "complete", t0),
         }
 
     @staticmethod
-    def route_after_verify(state: PipelineState) -> str:
-        if state["verify"].passed or state.get("attempts", 0) >= MAX_GENERATION_ATTEMPTS:
+    def route_after_complete(state: PipelineState) -> str:
+        done = state["verify"].passed and state["coverage"].passed
+        if done or state.get("attempts", 0) >= MAX_GENERATION_ATTEMPTS:
             return "cache_write"
         return "generate"
 
@@ -628,6 +677,7 @@ class Pipeline:
         g.add_node("assemble", self.node_assemble)
         g.add_node("generate", self.node_generate)
         g.add_node("verify", self.node_verify)
+        g.add_node("complete", self.node_complete)
         g.add_edge(START, "slots")
         g.add_edge("slots", "cache_lookup")
         g.add_conditional_edges(
@@ -647,9 +697,10 @@ class Pipeline:
             self.route_after_generate,
             {"verify": "verify", "cache_write": "cache_write"},
         )
+        g.add_edge("verify", "complete")
         g.add_conditional_edges(
-            "verify",
-            self.route_after_verify,
+            "complete",
+            self.route_after_complete,
             {"cache_write": "cache_write", "generate": "generate"},
         )
         g.add_edge("cache_write", END)
@@ -705,9 +756,14 @@ class Pipeline:
         answer = final["answer"]
         verify = final["verify"]
         warning = None
+        coverage = final.get("coverage") or CoverageResult()
         if not verify.passed:
             answer.confidence = "low"
             warning = "Verification failed after regeneration: " + "; ".join(verify.issues)
+        elif not coverage.passed:
+            if answer.confidence == "high":
+                answer.confidence = "medium"
+            warning = "Not every part of the question was answered: " + "; ".join(coverage.missing)
         if error:
             warning = f"Degraded answer (retrieval-only view, not cached): {error}"
         cache_info = final.get("cache_info") or CacheInfo(
@@ -729,6 +785,7 @@ class Pipeline:
             calculations=final.get("calculations", []),
             context=final["context"],
             verify=verify,
+            coverage=coverage,
             generation_attempts=final.get("attempts", 0),
             generator_role=final.get("generator_role", "-"),
             tokens_by_model=tokens_by_model,
@@ -853,10 +910,14 @@ class Pipeline:
                     tokens_by_model={
                         m: {"in": t["in"], "out": t["out"]} for m, t in r.tokens_by_model.items()
                     },
-                    calculator_calls=[c.formula for c in r.calculations],
+                    calculator_calls=[
+                        f"{c.formula}:{c.metric}" if c.metric else c.formula for c in r.calculations
+                    ],
                     generation_attempts=r.generation_attempts,
                     verify_passed=r.verify.passed,
                     verify_issues=r.verify.issues,
+                    coverage_method=r.coverage.method,
+                    coverage_missing=r.coverage.missing,
                     answer_class=r.answer.answer_class,
                     confidence=r.answer.confidence,
                     latency_ms_by_node=r.latency_ms_by_node,

@@ -150,7 +150,9 @@ metrics:
     synonyms: [income tax expense, income taxes, tax expense, provision for income taxes]
   net income:
     statement: income_statement
-    synonyms: [net income, net earnings, net profit, bottom line, profit for the year, earnings]
+    # bare "profit" is read as the bottom line; "gross profit", "operating profit" and
+    # "profit and loss" are longer phrases and match first. The generator is told to say so.
+    synonyms: [net income, net earnings, net profit, bottom line, profit for the year, earnings, profit, profits]
   basic:
     statement: income_statement
     synonyms: [basic net income per share, basic earnings per share, basic eps, net income per share basic]

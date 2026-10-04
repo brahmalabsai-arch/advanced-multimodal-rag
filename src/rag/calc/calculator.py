@@ -8,7 +8,8 @@ is told to say so, never to estimate.
 Phase 3 selected formulas by keyword (`select_formulas`, kept as the fallback); Phase 4
 selects them from slots (`select_formulas_from_slots`): a recognised formula id applies to the
 latest fiscal period in the question, and a metric plus a year-over-year / change / growth cue
-(or two periods) applies the generic YoY formulas.
+(or two periods) applies the generic YoY formulas — to every metric the question names, so
+"growth of revenue and net income" computes both.
 """
 
 from __future__ import annotations
@@ -326,6 +327,7 @@ def select_formulas(
 # --------------------------------------------------------------------- slot selection
 
 YOY_AGGREGATIONS = {"yoy", "change", "growth", "pct"}
+MAX_YOY_METRICS = 4  # each metric adds two calculation blocks to a 2,500-token context
 
 
 def select_formulas_from_slots(
@@ -336,8 +338,9 @@ def select_formulas_from_slots(
     default_fiscal_year: int = DEFAULT_FISCAL_YEAR,
 ) -> list[FormulaRequest]:
     """Phase 4 selection (architecture §4.10). Named formulas from the glossary win; otherwise a
-    metric with a comparison cue (or two periods) gets the generic YoY pair. The current period
-    is the latest fiscal year in the question."""
+    metric with a comparison cue (or two periods) gets the generic YoY pair, every metric in
+    question order (up to `MAX_YOY_METRICS`). The current period is the latest fiscal year in
+    the question."""
     cfg = config or load_formulas_config()
     fy = slots.current_fiscal_year or default_fiscal_year
     requests = [
@@ -349,10 +352,10 @@ def select_formulas_from_slots(
         return requests
     comparison = bool(set(slots.aggregation) & YOY_AGGREGATIONS) or slots.direction is not None
     if slots.metrics and (comparison or len(slots.resolved_fiscal_years) >= 2):
-        metric = next((m for m in slots.metrics if m in line_items), None)
-        if metric:
-            return [
-                FormulaRequest("yoy_change_pct", fy, metric),
-                FormulaRequest("yoy_change_abs", fy, metric),
-            ]
+        metrics = [m for m in slots.metrics if m in line_items][:MAX_YOY_METRICS]
+        return [
+            FormulaRequest(formula, fy, metric)
+            for metric in metrics
+            for formula in ("yoy_change_pct", "yoy_change_abs")
+        ]
     return []

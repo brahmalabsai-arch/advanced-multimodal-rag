@@ -26,6 +26,7 @@ from rag.compress.pipeline import CompressionOutcome
 from rag.graph import PipelineResult
 from rag.llm import LLMError
 from rag.query.assemble import ContextBlock
+from rag.query.coverage import CoverageResult
 from rag.query.generate import Answer
 from rag.query.rerank import RerankDecision
 from rag.query.retrieve import Candidate
@@ -108,6 +109,7 @@ class DebugOut(BaseModel):
     dropped: list[str]
     calculations: list[CalculationResult]
     verify: VerifyResult
+    coverage: CoverageResult
     generation_attempts: int
     generator_role: str
     tokens_by_model: dict[str, dict[str, int]]
@@ -245,6 +247,7 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
             dropped=r.context.dropped,
             calculations=r.calculations,
             verify=r.verify,
+            coverage=r.coverage,
             generation_attempts=r.generation_attempts,
             generator_role=r.generator_role,
             tokens_by_model=r.tokens_by_model,
