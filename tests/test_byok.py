@@ -425,3 +425,135 @@ def test_only_the_strongest_tier_of_figures_is_shown(tmp_path: Path) -> None:
     assert [f["url"] for f in shown] == ["/api/figures/p8_0"]
 
     assert _figures(result, [blocks[1]], None) == []
+
+
+# --------------------------------------------------------------------------- provider parameters
+
+
+@pytest.mark.parametrize(
+    ("profile", "key_field", "expected"),
+    [
+        ("gemini", "google_api_key", "max_output_tokens"),
+        ("groq_build", "groq_api_key", "max_tokens"),
+        ("anthropic", "anthropic_api_key", "max_tokens"),
+    ],
+)
+def test_the_output_cap_uses_each_providers_own_parameter_name(
+    profile: str, key_field: str, expected: str
+) -> None:
+    """Google's SDK rejects `max_tokens` before any network call (GenerateContentConfig forbids
+    extra fields), which made every Gemini key fail the key test with a 502."""
+    from langchain_core.messages import AIMessage
+
+    bound: list[dict] = []
+
+    class FakeChat:
+        def bind(self, **kw):
+            bound.append(kw)
+            return self
+
+        def invoke(self, messages):
+            return AIMessage(
+                content="ok",
+                usage_metadata={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+    settings = Settings(
+        _env_file=None, app_env="test", model_profile=profile, **{key_field: "test-key-0123456789"}
+    )
+    llm = LLMClient(settings, chat_factory=lambda cfg, role: FakeChat(), pacing_enabled=False)
+    assert llm.text("hi", role="small", max_tokens=7) == "ok"
+    assert bound == [{expected: 7}]
+
+
+def test_the_gemini_profile_uses_models_a_free_key_can_call() -> None:
+    """Pinned by the 2026-10-04 check (D-72): 2.5 ids 404 for new users, Pro has no free quota,
+    and gemini-3.8-flash allows 20 requests a day; flash-lite serves every role."""
+    from rag.core.config import load_models_config
+
+    gemini = load_models_config().profiles["gemini"]
+    assert gemini.small.model == gemini.large.model == gemini.vision.model
+    assert gemini.large.model == "gemini-3.5-flash-lite"
+    assert gemini.small.provider_kwargs == {"thinking_level": "minimal"}
+    assert gemini.large.provider_kwargs == {"thinking_level": "low"}
+
+
+# ------------------------------------------------------------------------------- daily quota
+
+
+GOOGLE_DAILY = (
+    "role=large model=gemini-3.8-flash failed after 1 attempt(s) (HTTP 429): GoogleRateLimitError: "
+    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota', "
+    "'details': [{'violations': [{'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', "
+    "'quotaValue': '20'}]}, {'retryDelay': '40604s'}]}}"
+)
+GROQ_DAILY = (
+    "role=large model=openai/gpt-oss-120b failed after 2 attempt(s) (HTTP 429): RateLimitError: "
+    "Rate limit reached for model `openai/gpt-oss-120b` on tokens per day (TPD): Limit 200000, "
+    "Used 199500, Requested 1200. Please try again in 19m12s."
+)
+GROQ_MINUTE = (
+    "role=large model=openai/gpt-oss-120b failed after 2 attempt(s) (HTTP 429): RateLimitError: "
+    "Rate limit reached on tokens per minute (TPM): Limit 8000. Please try again in 7.66s."
+)
+
+
+@pytest.mark.parametrize(
+    ("message", "daily"), [(GOOGLE_DAILY, True), (GROQ_DAILY, True), (GROQ_MINUTE, False)]
+)
+def test_a_spent_daily_quota_is_told_apart_from_a_per_minute_limit(
+    message: str, daily: bool
+) -> None:
+    from rag.llm import LLMCallError
+
+    assert LLMCallError(message, status_code=429).daily_quota is daily
+    assert LLMCallError(message, status_code=500).daily_quota is False
+
+
+def test_the_key_test_says_the_daily_limit_truthfully() -> None:
+    from rag.llm import DAILY_LIMIT_MESSAGE, LLMCallError
+
+    err = byok.http_error(LLMCallError(GOOGLE_DAILY, status_code=429))
+    assert err.status_code == 429 and err.detail == DAILY_LIMIT_MESSAGE
+    assert err.headers == {"X-Limit": "daily"}
+    assert "change the provider" in DAILY_LIMIT_MESSAGE and "kept" in DAILY_LIMIT_MESSAGE
+    minute = byok.http_error(LLMCallError(GROQ_MINUTE, status_code=429))
+    assert "Wait a minute" in minute.detail and not minute.headers
+
+
+def test_a_daily_limit_mid_answer_degrades_with_the_same_message() -> None:
+    from rag.graph import degraded_answer
+    from rag.llm import DAILY_LIMIT_MESSAGE, LLMCallError
+    from rag.query.assemble import AssembledContext
+
+    ctx = AssembledContext(blocks=[], token_budget=2500, tokens_used=0)
+    daily = degraded_answer(ctx, LLMCallError(GROQ_DAILY, status_code=429))
+    assert daily.answer_markdown.startswith(DAILY_LIMIT_MESSAGE)
+    minute = degraded_answer(ctx, LLMCallError(GROQ_MINUTE, status_code=429))
+    assert DAILY_LIMIT_MESSAGE not in minute.answer_markdown
+
+
+def test_the_status_is_found_on_the_cause_where_google_keeps_it() -> None:
+    """LangChain's Google wrapper carries no status of its own; Google's ClientError, its cause,
+    has `code`. Without this every Gemini 429 read as a 502 "could not be reached"."""
+    from rag.llm import _status_code, is_retryable
+
+    class ClientError(Exception):
+        def __init__(self) -> None:
+            super().__init__("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel")
+            self.code = 429
+
+    class GoogleRateLimitError(Exception):
+        pass
+
+    try:
+        try:
+            raise ClientError()
+        except ClientError as inner:
+            raise GoogleRateLimitError(str(inner)) from inner
+    except GoogleRateLimitError as outer:
+        assert _status_code(outer) == 429
+        assert is_retryable(outer) is False  # a spent daily quota is not retried
+
+    reset = ConnectionResetError(104, "connection reset")  # errno 104 is not HTTP 104
+    assert _status_code(reset) is None and is_retryable(reset) is True

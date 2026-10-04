@@ -39,6 +39,7 @@ from pydantic import BaseModel
 
 from rag.core.logging import get_logger, redact, use_key
 from rag.llm import (
+    DAILY_LIMIT_MESSAGE,
     PROVIDERS,
     LLMClient,
     LLMError,
@@ -120,6 +121,10 @@ def http_error(exc: LLMError) -> HTTPException:
     if status == 402:
         return HTTPException(
             status_code=402, detail="That key has no credit left with the provider."
+        )
+    if status == 429 and getattr(exc, "daily_quota", False):
+        return HTTPException(
+            status_code=429, detail=DAILY_LIMIT_MESSAGE, headers={"X-Limit": "daily"}
         )
     if status == 429:
         return HTTPException(

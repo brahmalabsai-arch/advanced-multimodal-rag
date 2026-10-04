@@ -1,6 +1,6 @@
 # Model-swap dry run (Phase 8, NFR-11)
 
-Generated 2026-09-19T13:05:41+00:00 · `scripts/check_profile.py --profile all --dry-run` · no network calls.
+Generated 2026-10-04T12:34:32+00:00 · `scripts/check_profile.py --profile all --dry-run` · no network calls.
 
 A profile passes when `models.yaml` validates with it active, every role resolves to a provider + model, the provider chat-model constructor accepts the profile's `provider_kwargs`, the context budget fits under the pacing limits and the structured-output mode matches the provider. A missing key or an uninstalled package is a warning: the template is valid, the switch (F1) supplies them.
 
@@ -9,7 +9,7 @@ A profile passes when `models.yaml` validates with it active, every role resolve
 | `groq_build` | ✅ pass | 0 | 1 | groq:`openai/gpt-oss-20b` | groq:`openai/gpt-oss-120b` | groq:`qwen/qwen3.8-27b` |
 | `groq_qwen_large` | ✅ pass | 0 | 1 | groq:`openai/gpt-oss-20b` | groq:`qwen/qwen3.8-27b` | groq:`qwen/qwen3.8-27b` |
 | `anthropic` | ✅ pass | 0 | 2 | anthropic:`claude-haiku-4-5-20251001` | anthropic:`claude-sonnet-5` | anthropic:`claude-sonnet-5` |
-| `gemini` | ✅ pass | 0 | 1 | google:`gemini-2.5-flash-lite` | google:`gemini-2.5-pro` | google:`gemini-2.5-pro` |
+| `gemini` | ✅ pass | 0 | 1 | google:`gemini-3.5-flash-lite` | google:`gemini-3.5-flash-lite` | google:`gemini-3.5-flash-lite` |
 
 ## `groq_build`
 
@@ -76,19 +76,19 @@ A profile passes when `models.yaml` validates with it active, every role resolve
 | Check | Level | Detail |
 |---|---|---|
 | config | ✅ OK | models.yaml validates; active_profile=gemini; structured_output=native; context_budget_tokens=6000 |
-| roles | ✅ OK | small  → google:gemini-2.5-flash-lite |
-| roles | ✅ OK | large  → google:gemini-2.5-pro |
-| roles | ✅ OK | vision → google:gemini-2.5-pro |
+| roles | ✅ OK | small  → google:gemini-3.5-flash-lite |
+| roles | ✅ OK | large  → google:gemini-3.5-flash-lite |
+| roles | ✅ OK | vision → google:gemini-3.5-flash-lite |
 | package | ✅ OK | google: langchain-google-genai 4.4.0 |
 | key | ✅ OK | GOOGLE_API_KEY present in .env |
-| construct | ✅ OK | small  ChatGoogleGenerativeAI('gemini-2.5-flash-lite') |
-| construct | ✅ OK | large  ChatGoogleGenerativeAI('gemini-2.5-pro') |
-| construct | ✅ OK | vision ChatGoogleGenerativeAI('gemini-2.5-pro') |
+| construct | ✅ OK | small  ChatGoogleGenerativeAI('gemini-3.5-flash-lite', thinking_level='minimal') |
+| construct | ✅ OK | large  ChatGoogleGenerativeAI('gemini-3.5-flash-lite', thinking_level='low') |
+| construct | ✅ OK | vision ChatGoogleGenerativeAI('gemini-3.5-flash-lite', thinking_level='low') |
 | budgets | ✅ OK | large  context_budget 6000 vs tpm 250000 → 244000 tokens headroom for prompt scaffolding + output |
 | budgets | ✅ OK | vision max_tokens cap none (OTPM) · input cap 250000 · max_images unbounded |
 | structured | ✅ OK | native for providers google (schema instruction + validation; native structured output is an F1 step) |
 | prices | 🟡 WARN | no per-token prices for small, large, vision → break-even test runs in quota mode (§6.6); fill `price_usd_per_mtok` at F1 |
-| enrichment | ✅ OK | figures → vision (gemini-2.5-pro); table_summaries → small (gemini-2.5-flash-lite) |
+| enrichment | ✅ OK | figures → vision (gemini-3.5-flash-lite); table_summaries → small (gemini-3.5-flash-lite) |
 | thresholds | ✅ OK | thresholds.yaml validates; compression.mode=classifier, cache.enabled=True |
 
 Reproduce: `make check-profile` (all profiles) or `.venv/Scripts/python scripts/check_profile.py --profile anthropic --dry-run`.

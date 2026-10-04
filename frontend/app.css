@@ -360,6 +360,31 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   text-overflow: ellipsis;
 }
 
+.new-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 5px 12px 5px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, transform 160ms var(--ease-out);
+}
+.new-chat svg { width: 15px; height: 15px; }
+.new-chat:active { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) {
+  .new-chat:hover { border-color: var(--accent); color: var(--ink); }
+}
+.new-chat:not([hidden]) + .model-pill { margin-left: 0; }
+
+/* a redrawn thread (after a reload) appears at once, not card by card */
+.is-restoring *, .is-restoring { animation: none !important; transition: none !important; }
+
 .model-pill {
   margin-left: auto;
   padding: 5px 12px;
@@ -705,6 +730,7 @@ li[data-state="done"] .dot { background: var(--computed); }
 }
 .bubble.is-shown { opacity: 1; transform: none; }
 .bubble:active { transform: scale(0.97); }
+.bubble__icon { display: none; }
 .bubble__dot {
   width: 8px; height: 8px;
   border-radius: 50%;
@@ -949,5 +975,10 @@ dialog[open]::backdrop { opacity: 1; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .how__cols { grid-template-columns: 1fr; }
   .modal__inner { padding: 22px 18px 18px; }
-  .bubble { bottom: 92px; }
+  /* on a phone the label covers the thread: the bubble becomes a round icon button */
+  .bubble { bottom: 92px; width: 48px; height: 48px; padding: 0; justify-content: center; border-radius: 50%; }
+  .bubble__label, .bubble__dot { display: none; }
+  .new-chat { padding: 6px; }
+  .new-chat__label { display: none; }
+  .bubble__icon { display: block; color: var(--computed); }
 }

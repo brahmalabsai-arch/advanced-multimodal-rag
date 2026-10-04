@@ -26,6 +26,7 @@ from rag.compress.pipeline import CompressionOutcome
 from rag.graph import PipelineResult
 from rag.llm import LLMError
 from rag.query.assemble import ContextBlock
+from rag.query.condense import CondenseResult, Turn
 from rag.query.coverage import CoverageResult
 from rag.query.generate import Answer
 from rag.query.rerank import RerankDecision
@@ -46,6 +47,8 @@ _ALLOWED_CONTROL = {chr(9), chr(10), chr(13)}
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     bypass_cache: bool = False
+    # in-session memory (D-71): earlier turns, sent by the page; capped again by the pipeline
+    history: list[Turn] = Field(default_factory=list, max_length=50)
 
 
 def validate_question(question: str, max_chars: int) -> str:
@@ -94,6 +97,7 @@ class AnalysisOut(BaseModel):
 
 
 class DebugOut(BaseModel):
+    condense: CondenseResult | None = None
     intent: str
     intent_rule: str | None
     slots: QuerySlots
@@ -206,6 +210,7 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
         warning=r.warning,
         degraded=r.degraded,
         debug=DebugOut(
+            condense=r.condense,
             intent=r.intent,
             intent_rule=r.intent_rule,
             slots=r.slots.model_copy(update={"matches": []}),
@@ -296,7 +301,11 @@ async def ask(body: AskRequest, request: Request) -> Any:
         try:
             result = await asyncio.wait_for(
                 run_in_threadpool(
-                    pipeline.ask, question, bypass_cache=body.bypass_cache, client=client
+                    pipeline.ask,
+                    question,
+                    bypass_cache=body.bypass_cache,
+                    client=client,
+                    history=body.history,
                 ),
                 timeout=server.request_timeout_seconds,
             )

@@ -172,6 +172,18 @@ class RateLimitConfig(BaseModel):
     )
 
 
+class ConversationConfig(BaseModel):
+    """In-session memory (D-71): how much of the conversation a follow-up rewrite may see.
+
+    The page keeps the whole session in the visitor's tab; these caps bound what is sent to the
+    `small` role when a follow-up has to be made standalone. Oldest turns are dropped first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_turns: int = Field(default=10, ge=0, le=50)
+    max_tokens: int = Field(default=1500, ge=100, le=6000)
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -183,6 +195,7 @@ class ServerConfig(BaseModel):
     max_question_chars: int = Field(default=1000, ge=16, le=20000)
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    conversation: ConversationConfig = Field(default_factory=ConversationConfig)
 
 
 class DevClockConfig(BaseModel):

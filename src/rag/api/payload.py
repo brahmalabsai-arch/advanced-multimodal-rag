@@ -32,6 +32,7 @@ from typing import Any
 
 from rag.calc.calculator import CalculationResult
 from rag.graph import PipelineResult
+from rag.llm import DAILY_LIMIT_MESSAGE
 from rag.query.slots import QuerySlots
 
 DISCLAIMER = (
@@ -41,6 +42,7 @@ DISCLAIMER = (
 
 # node name in `latency_ms_by_node` → (label on the rail, kind the page styles it with)
 NODE_LABELS: dict[str, tuple[str, str]] = {
+    "condense": ("Understood the follow-up", "normal"),
     "slots": ("Read the question", "normal"),
     "cache_lookup": ("Checked the cache", "normal"),
     "scope": ("Checked it is answerable from the report", "checked"),
@@ -56,7 +58,7 @@ NODE_LABELS: dict[str, tuple[str, str]] = {
     "cache_write": ("Cached the answer", "normal"),
 }
 # nodes whose presence says nothing to a reader when they did no work
-_QUIET_NODES = {"cache_write", "rerank", "compress", "complete"}
+_QUIET_NODES = {"cache_write", "rerank", "compress", "complete", "condense"}
 
 
 def _fmt(value: float) -> str:
@@ -289,6 +291,18 @@ def _compression_detail(result: PipelineResult) -> str:
     return s.get("skip_reason") or "context left intact"
 
 
+def _condense_detail(result: PipelineResult) -> str:
+    """How a follow-up was read; empty for a question that did not need the conversation."""
+    c = result.condense
+    if c is None or not c.follow_up:
+        return ""
+    if c.rewritten:
+        return f'read as "{c.question}"'
+    if c.error:
+        return "answered as typed: the follow-up could not be rewritten"
+    return "already standalone"
+
+
 def _coverage_detail(result: PipelineResult) -> str:
     """What the completeness check concluded, in the reader's terms."""
     c = result.coverage
@@ -332,6 +346,7 @@ def _steps(result: PipelineResult) -> list[dict[str, Any]]:
             else "; ".join(result.verify.issues[:2])
         ),
         "complete": _coverage_detail(result),
+        "condense": _condense_detail(result),
         "cache_write": (
             "answer cached for the next visitor"
             if result.cache.write and result.cache.write.admitted
@@ -391,6 +406,9 @@ def answer_payload(
     model = result.generator_model or next(iter(result.tokens_by_model), None)
     payload: dict[str, Any] = {
         "answer_markdown": result.answer.answer_markdown,
+        # the page keeps this in its conversation memory, so later follow-ups build on the
+        # resolved question rather than on "and gross profit?"
+        "standalone_question": result.question,
         "confidence": result.answer.confidence,
         "degraded": result.degraded,
         "citations": _citations(result, cited_blocks, store),
@@ -426,6 +444,8 @@ def answer_payload(
         payload["figures"] = figures_shown
     if result.coverage.missing:
         payload["incomplete"] = list(result.coverage.missing)
+    if result.daily_quota:
+        payload["quota"] = {"limit": "daily", "message": DAILY_LIMIT_MESSAGE}
     if result.answer.confidence != "low":
         payload["disclaimer"] = DISCLAIMER
     if result.answer.fiscal_year_interpretation:

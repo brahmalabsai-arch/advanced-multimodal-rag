@@ -88,7 +88,7 @@ def test_api_rejects_binary_and_wordless_questions_before_readiness(api) -> None
 def test_request_timeout_answers_504(api, monkeypatch: pytest.MonkeyPatch) -> None:
     client, app = api
 
-    def slow_ask(question, *, bypass_cache=False, client=None):
+    def slow_ask(question, *, bypass_cache=False, client=None, history=None):
         time.sleep(0.5)
         raise AssertionError("the response must not wait for this")
 

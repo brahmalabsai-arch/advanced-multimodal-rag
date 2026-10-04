@@ -35,6 +35,8 @@ class Trace(BaseModel):
     clock_offset_s: int = 0
     model_profile: str
     query: str
+    asked: str | None = Field(default=None, description="as typed, when a follow-up was rewritten")
+    condense_reason: str | None = None
     slots: dict[str, Any] | None = None
     cache_tier: str = "bypassed"
     cache_similarity: float | None = None
