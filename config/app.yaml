@@ -2,7 +2,7 @@
 # Phase 8: `max_question_chars` and `request_timeout_seconds` are the input limits (§13);
 # startup refuses a non-loopback bind and the request guard rejects non-loopback clients.
 server:
-  host: 127.0.0.1
+  host: ${SERVER_HOST:127.0.0.1}   # 0.0.0.0 only in the deployed container (F2)
   port: 8000
   workers: 1
   max_question_chars: 1000

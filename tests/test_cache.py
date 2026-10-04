@@ -166,7 +166,8 @@ def test_version_keys_change_on_value_edit_not_on_comment(settings, tmp_path: Pa
         ).retrieval_config_hash
         != base.retrieval_config_hash
     )
-    assert base.generator_model == "openai/gpt-oss-120b+qwen/qwen3.8-27b"
+    # the provider prefix keeps BYOK visitors on separate entries (F2)
+    assert base.generator_model == "groq:openai/gpt-oss-120b+qwen/qwen3.8-27b"
     assert base.prompt_version.startswith("answer-v1-")
 
 
@@ -855,10 +856,13 @@ def test_admin_routes_dev_only_clock_stats_purge(
         assert s["l2"]["entries"] == 0 and s["clock"]["offset_s"] == 0 and s["enabled"] is True
         # refusal → L1 only, then an L1 hit through the API with the cache payload
         r1 = c.post("/api/ask", json={"question": "Should I buy NVIDIA stock?"}).json()
-        assert r1["cache_tier"] == "MISS" and r1["cache"]["write"]["tiers"] == ["L1"]
+        assert r1["debug"]["cache_tier"] == "MISS" and r1["debug"]["cache"]["write"]["tiers"] == [
+            "L1"
+        ]
         r2 = c.post("/api/ask", json={"question": "Should I buy NVIDIA stock?"}).json()
-        assert r2["cache_tier"] == "L1" and r2["cache"]["answer_class"] == "analytical"
-        assert r2["answer"]["answer_markdown"] == r1["answer"]["answer_markdown"]
+        assert r2["debug"]["cache_tier"] == "L1"
+        assert r2["debug"]["cache"]["answer_class"] == "analytical"
+        assert r2["answer_markdown"] == r1["answer_markdown"]
         # clock
         assert c.post("/api/admin/clock", json={"advance_seconds": DAY}).json()["offset_s"] == DAY
         assert c.get("/api/admin/clock").json()["offset_days"] == 1.0
@@ -875,10 +879,8 @@ def test_admin_routes_dev_only_clock_stats_purge(
         )
         p = c.post("/api/admin/cache/purge", json={"scope": "all"}).json()
         assert p["l1_cleared"] == 1 and p["remaining"] == 0
-        assert (
-            c.post("/api/ask", json={"question": "Should I buy NVIDIA stock?"}).json()["cache_tier"]
-            == "MISS"
-        )
+        after_purge = c.post("/api/ask", json={"question": "Should I buy NVIDIA stock?"}).json()
+        assert after_purge["debug"]["cache_tier"] == "MISS"
         # admin routes vanish outside dev
         api_main.app.state.admin_enabled = False
         assert c.get("/api/admin/cache/stats").status_code == 404

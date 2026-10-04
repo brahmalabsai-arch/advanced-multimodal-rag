@@ -2,182 +2,222 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LedgerLens — ask an annual report</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LedgerLens: ask an annual report</title>
+<meta name="description" content="Ask questions about a company's annual report. Ratios are computed in code, every figure cites the page it came from, and answers run on your own model key.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#F5F6F3">
+<link rel="preload" href="./fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="./fonts/SplineSansMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="./app.css">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="topbar__brand">
-    <span class="wordmark">LedgerLens</span>
-    <span class="doc-chip" id="doc-chip">Reading: NVIDIA annual report, FY2026 · 175 pages</span>
-  </div>
-  <div class="topbar__tools">
-    <span class="pill pill--quiet" id="model-pill" hidden></span>
-    <button type="button" class="link-button" id="change-key" hidden>Change key</button>
-    <a class="link-button" href="https://github.com/brahmalabsai-arch" target="_blank" rel="noopener">Source code</a>
-  </div>
-</header>
+<div class="shell">
 
-<!-- ───────────────────────── key gate ───────────────────────── -->
-<main class="gate" id="gate">
-  <section class="gate__pitch">
-    <p class="kicker">Balance sheet question answering</p>
-    <h1 class="display">Every figure comes with the page it came from.</h1>
-    <p class="lede">Ask about liquidity, leverage or the movement in a line item. The system searches the filing's text, tables and charts, computes ratios in code instead of asking a model to do arithmetic, and cites the page behind each number.</p>
+  <!-- ───────────────────── collapsed rail: the sidebar at rest ───────────────────── -->
+  <nav class="rail" aria-label="Panels">
+    <span class="rail__mark" aria-hidden="true">LL</span>
+    <button type="button" class="rail__btn" data-open="key" aria-label="Model key" title="Model key">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/></svg>
+    </button>
+    <button type="button" class="rail__btn" data-open="cache" aria-label="Cache this session" title="Cache this session">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+      <span class="rail__count num" id="rail-count" hidden></span>
+    </button>
+    <button type="button" class="rail__btn" data-open="about" aria-label="About this build" title="About this build">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.6v.1"/></svg>
+    </button>
+    <a class="rail__btn rail__btn--foot" href="https://github.com/brahmalabsai-arch/advanced-multimodal-rag" target="_blank" rel="noopener" aria-label="Source code" title="Source code">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+    </a>
+  </nav>
 
-    <div class="rule"></div>
-
-    <dl class="stats">
-      <div class="stat">
-        <dt class="stat__label">Numeric answers correct on the test set</dt>
-        <dd class="stat__value">100%</dd>
-      </div>
-      <div class="stat">
-        <dt class="stat__label">Wrong answers reused from memory across 286 trick pairs</dt>
-        <dd class="stat__value">0.0%</dd>
-      </div>
-      <div class="stat">
-        <dt class="stat__label">Indexed blocks of text, table rows and figures</dt>
-        <dd class="stat__value">689</dd>
-      </div>
-    </dl>
-
-    <p class="gate__note">Retrieval, ratio arithmetic and citations run without any model. Your key pays only for the written explanation.</p>
-  </section>
-
-  <section class="gate__form" aria-labelledby="gate-heading">
-    <h2 id="gate-heading" class="heading-2">Connect your model key</h2>
-    <p class="muted">Written answers run on your own API key, so your questions are never billed to anyone else.</p>
-
-    <form id="key-form" autocomplete="off">
-      <fieldset class="field">
-        <legend class="field__label">Provider</legend>
-        <div class="segmented" id="provider-group" role="radiogroup" aria-label="Provider">
-          <button type="button" class="segment is-selected" role="radio" aria-checked="true" data-provider="groq">Groq</button>
-          <button type="button" class="segment" role="radio" aria-checked="false" data-provider="anthropic">Anthropic</button>
-          <button type="button" class="segment" role="radio" aria-checked="false" data-provider="gemini">Gemini</button>
-          <button type="button" class="segment" role="radio" aria-checked="false" data-provider="openrouter">OpenRouter</button>
-        </div>
-      </fieldset>
-
-      <div class="field">
-        <label class="field__label" for="api-key">API key</label>
-        <input class="input input--mono" id="api-key" type="password" inputmode="text" spellcheck="false"
-               placeholder="gsk_…" aria-describedby="key-help">
-        <p class="field__help" id="key-help">Paste a key with permission to call chat models.</p>
-      </div>
-
-      <label class="checkbox">
-        <input type="checkbox" id="remember-key" checked>
-        <span>Keep it for this browser tab only</span>
-      </label>
-
-      <div class="actions">
-        <button type="submit" class="button button--primary" id="connect">Test key and start</button>
-      </div>
-
-      <p class="form-error" id="key-error" role="alert" hidden></p>
-    </form>
-
-    <aside class="notice">
-      <svg viewBox="0 0 24 24" aria-hidden="true" class="notice__icon"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg>
-      <p>Your key travels with each request over HTTPS, stays in memory for that request, and is never written to logs, traces or the answer cache. Nothing is stored on the server.</p>
-    </aside>
-
-    <p class="muted small">This runs on a free instance that sleeps after 15 idle minutes, so the first question can take up to a minute while it wakes.</p>
-  </section>
-</main>
-
-<!-- ───────────────────────── workspace ───────────────────────── -->
-<main class="workspace" id="workspace" hidden>
-  <div class="workspace__main">
-
-    <form class="ask" id="ask-form">
-      <label class="visually-hidden" for="question">Your question</label>
-      <input class="input ask__input" id="question" type="text"
-             placeholder="What is the current ratio at the latest balance sheet date?" autocomplete="off">
-      <button type="submit" class="button button--primary" id="ask">Ask</button>
-    </form>
-
-    <div class="suggestions" id="suggestions">
-      <button type="button" class="chip">What is the current ratio at the latest balance sheet date?</button>
-      <button type="button" class="chip">How did inventories change year over year?</button>
-      <button type="button" class="chip">What is total debt to equity?</button>
-      <button type="button" class="chip">Why did gross margin fall?</button>
+  <!-- ───────────────────── expanded sidebar ───────────────────── -->
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-label="Settings and details" aria-hidden="true" inert>
+    <div class="drawer__head">
+      <span class="wordmark">LedgerLens</span>
+      <button type="button" class="icon-button" id="drawer-close" aria-label="Close panel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </div>
 
-    <!-- empty -->
-    <section class="panel panel--empty" id="state-empty">
-      <p class="panel__title">Nothing asked yet</p>
-      <p class="muted">Pick one of the questions above, or write your own about the balance sheet, income statement or cash flows.</p>
-    </section>
+    <div class="drawer__body">
+      <details class="section" id="section-key" open>
+        <summary class="section__head">
+          <span>Model key</span>
+          <span class="section__meta" id="key-status">not connected</span>
+        </summary>
+        <div class="section__body" id="key-slot"></div>
+      </details>
 
-    <!-- working -->
-    <section class="panel" id="state-working" hidden aria-live="polite">
-      <p class="panel__title" id="working-title">Reading the filing</p>
-      <ol class="progress" id="progress"></ol>
-      <p class="muted small" id="warming" hidden>The server was asleep. Waking it takes up to a minute; this only happens on the first question.</p>
-    </section>
-
-    <!-- error -->
-    <section class="panel panel--error" id="state-error" hidden role="alert">
-      <p class="panel__title" id="error-title">Something went wrong</p>
-      <p id="error-body" class="muted"></p>
-      <div class="actions actions--inline">
-        <button type="button" class="button button--quiet" id="error-retry">Try again</button>
-        <button type="button" class="button button--quiet" id="error-key" hidden>Change key</button>
-      </div>
-    </section>
-
-    <!-- answer -->
-    <article class="answer" id="state-answer" hidden aria-live="polite">
-      <header class="answer__head">
-        <p class="answer__figure" id="answer-figure"></p>
-        <div class="answer__meta">
-          <p class="answer__caption" id="answer-caption"></p>
-          <p class="answer__working" id="answer-working"></p>
+      <details class="section" id="section-cache" open>
+        <summary class="section__head">
+          <span>Cache this session</span>
+          <span class="section__meta num" id="cache-count">0</span>
+        </summary>
+        <div class="section__body">
+          <p class="muted small" id="cache-empty">Answers you get in this tab are listed here, with whether they came from the answer cache or were saved to it for the next visitor.</p>
+          <ol class="cache-list" id="cache-list"></ol>
         </div>
-      </header>
+      </details>
 
-      <div class="prose" id="answer-prose"></div>
-
-      <p class="disclaimer" id="answer-disclaimer" hidden></p>
-
-      <div class="citations" id="citations"></div>
-
-      <div class="figures">
-        <table class="figures__table" id="figures-table" hidden>
-          <caption class="figures__caption">Figures used</caption>
-          <tbody id="figures-body"></tbody>
-        </table>
-      </div>
-    </article>
-  </div>
-
-  <!-- method rail -->
-  <aside class="rail" id="rail" hidden>
-    <div class="rail__head">
-      <h2 class="heading-3">How this answer was built</h2>
-      <span class="pill pill--time" id="rail-total"></span>
+      <details class="section" id="section-about">
+        <summary class="section__head"><span>About this build</span></summary>
+        <div class="section__body about">
+          <p>Ratios are computed in code rather than written by a model, and every number carries the page of the filing it was read from.</p>
+          <dl class="evidence">
+            <div class="evidence__row"><dt>Numeric answers correct on the 48-question test set</dt><dd class="num">100%</dd></div>
+            <div class="evidence__row"><dt>Answers wrongly reused from memory, over 286 adversarial pairs</dt><dd class="num">0.0%</dd></div>
+            <div class="evidence__row"><dt>Passages, table rows and figures indexed from the filing</dt><dd class="num">689</dd></div>
+          </dl>
+          <figure class="specimen" id="specimen" hidden>
+            <img id="specimen-img" src="/api/pages/141" alt="Page 141 of the filing, the consolidated balance sheets" loading="lazy" decoding="async">
+            <figcaption>Consolidated Balance Sheets, page 141.</figcaption>
+          </figure>
+          <p class="muted small">Search, ratio arithmetic and citation checking run without a model. Your key pays only for the written explanation.</p>
+          <p class="muted small">This runs on a free instance that sleeps after 15 idle minutes, so the first question can take up to a minute.</p>
+          <a class="link" href="https://github.com/brahmalabsai-arch/advanced-multimodal-rag" target="_blank" rel="noopener">Source code on GitHub</a>
+        </div>
+      </details>
     </div>
-    <ol class="steps" id="steps"></ol>
-    <p class="rail__foot" id="rail-foot"></p>
   </aside>
-</main>
 
-<!-- page viewer -->
+  <!-- ───────────────────── chat ───────────────────── -->
+  <main class="chat">
+    <header class="chat__head">
+      <button type="button" class="icon-button chat__menu" data-open="key" aria-label="Open panel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      </button>
+      <div class="chat__title">
+        <span class="wordmark">LedgerLens</span>
+        <span class="doc-chip">NVIDIA annual report, FY2026</span>
+      </div>
+      <button type="button" class="model-pill" id="model-pill" data-open="key" hidden></button>
+    </header>
+
+    <div class="thread" id="thread" aria-live="polite">
+      <section class="welcome" id="welcome">
+        <h1 class="welcome__title">Ask the annual report.</h1>
+        <p class="welcome__lede">Liquidity, leverage, a line item that moved, or the strategy behind it. Every figure comes with the page it came from.</p>
+        <div class="suggestions" id="suggestions">
+          <button type="button" class="chip">What is the current ratio at the latest balance sheet date?</button>
+          <button type="button" class="chip">How did inventories change year over year?</button>
+          <button type="button" class="chip">What is total debt to equity?</button>
+          <button type="button" class="chip">What is NVIDIA's five-layer cake?</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="composer-wrap">
+      <form class="composer" id="ask-form">
+        <label class="visually-hidden" for="question">Your question</label>
+        <textarea class="composer__input" id="question" rows="1" placeholder="Ask about the filing" autocomplete="off" spellcheck="true"></textarea>
+        <button type="submit" class="composer__send" id="ask" aria-label="Ask">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+        </button>
+      </form>
+    </div>
+  </main>
+</div>
+
+<!-- floating bubble: how the latest answer was built -->
+<button type="button" class="bubble" id="how-bubble" hidden>
+  <span class="bubble__dot" aria-hidden="true"></span>
+  How the agent answered this
+</button>
+
+<!-- ───────────────────── first-launch key modal ───────────────────── -->
+<dialog class="modal" id="key-modal" aria-labelledby="key-modal-title">
+  <div class="modal__inner">
+    <h2 class="modal__title" id="key-modal-title">Connect your model key</h2>
+    <p class="muted">Answers are written with your own API key, so your questions are never billed to anyone else.</p>
+    <div id="modal-slot">
+      <form id="key-form" class="key-form" autocomplete="off">
+        <fieldset class="field">
+          <legend class="field__label">Provider</legend>
+          <div class="segmented" id="provider-group" role="radiogroup" aria-label="Provider">
+            <button type="button" class="segment is-selected" role="radio" aria-checked="true" data-provider="groq">Groq</button>
+            <button type="button" class="segment" role="radio" aria-checked="false" data-provider="anthropic">Anthropic</button>
+            <button type="button" class="segment" role="radio" aria-checked="false" data-provider="gemini">Gemini</button>
+          </div>
+        </fieldset>
+        <div class="field">
+          <label class="field__label" for="api-key">API key</label>
+          <input class="input input--mono" id="api-key" type="password" spellcheck="false" autocomplete="off" placeholder="gsk_…">
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="remember-key" checked>
+          <span>Keep it for this browser tab only</span>
+        </label>
+        <button type="submit" class="button button--primary" id="connect">Test key and start</button>
+        <p class="form-error" id="key-error" role="alert" hidden></p>
+        <p class="key-note small">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l7 2.8v5.4c0 3.9-2.8 6.9-7 8.8-4.2-1.9-7-4.9-7-8.8V6.3z"/><path d="M9.3 12.1l1.9 1.9 3.6-3.8"/></svg>
+          Sent with each request, held in memory for that request only, never logged or cached.
+        </p>
+      </form>
+    </div>
+    <button type="button" class="link-button modal__later" id="key-later">Look around first</button>
+  </div>
+</dialog>
+
+<!-- ───────────────────── how the agent answered ───────────────────── -->
+<dialog class="modal modal--wide" id="how-dialog" aria-labelledby="how-title">
+  <div class="modal__inner">
+    <div class="how__head">
+      <div>
+        <h2 class="modal__title" id="how-title">How the agent answered this</h2>
+        <p class="how__question" id="how-question"></p>
+      </div>
+      <button type="button" class="icon-button" id="how-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="metrics" id="how-metrics"></div>
+    <div class="how__cols">
+      <section>
+        <h3 class="how__label">Steps</h3>
+        <ol class="steps" id="how-steps"></ol>
+      </section>
+      <section id="how-passages-wrap">
+        <h3 class="how__label">Top passages retrieved</h3>
+        <table class="passages">
+          <thead><tr><th scope="col">Passage</th><th scope="col">Cosine</th><th scope="col">RRF</th></tr></thead>
+          <tbody id="how-passages"></tbody>
+        </table>
+        <p class="muted small">Cosine is semantic similarity to the question. RRF fuses the semantic and keyword rankings: 1/(60 + rank), summed over both.</p>
+      </section>
+    </div>
+    <p class="how__foot" id="how-foot"></p>
+  </div>
+</dialog>
+
+<!-- page / figure viewer -->
 <dialog class="viewer" id="viewer">
   <div class="viewer__bar">
     <p class="viewer__title" id="viewer-title"></p>
-    <button type="button" class="link-button" id="viewer-close">Close</button>
+    <button type="button" class="icon-button" id="viewer-close" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
   </div>
-  <img class="viewer__img" id="viewer-img" alt="">
+  <img class="viewer__img" id="viewer-img" alt="" hidden src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
 </dialog>
+
+<!-- one turn in the thread -->
+<template id="turn-tpl">
+  <div class="turn">
+    <p class="msg-user"></p>
+    <article class="msg-agent">
+      <div class="working">
+        <p class="working__title">Reading the filing</p>
+        <ol class="progress"></ol>
+        <p class="muted small working__warm" hidden>The server was asleep. Waking it takes up to a minute, and only happens on the first question.</p>
+      </div>
+    </article>
+  </div>
+</template>
 
 <script src="./vendor/marked.min.js"></script>
 <script src="./vendor/purify.min.js"></script>

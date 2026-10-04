@@ -18,10 +18,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from rag.api.byok import KEY_HEADER, Credentials, credentials_from, http_error, use_key
+from rag.api.payload import answer_payload
 from rag.cache.records import CacheInfo
 from rag.calc.calculator import CalculationResult
 from rag.compress.pipeline import CompressionOutcome
 from rag.graph import PipelineResult
+from rag.llm import LLMError
 from rag.query.assemble import ContextBlock
 from rag.query.generate import Answer
 from rag.query.rerank import RerankDecision
@@ -252,25 +255,73 @@ def to_response(r: PipelineResult, store) -> AskResponse:  # noqa: ANN001 - Inde
     )
 
 
-@router.post("/ask", response_model=AskResponse)
-async def ask(body: AskRequest, request: Request) -> AskResponse:
-    server = request.app.state.app_config.server
-    question = validate_question(body.question, server.max_question_chars)
-    pipeline = request.app.state.pipeline
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="pipeline not ready")
+def _pipeline_and_client(request: Request, creds: Credentials | None):
+    """Pick the pipeline for this request's provider and the client that will pay for it.
+
+    With credentials: the provider's own pipeline (its own cache version keys, its own context
+    budget) and a client built from the caller's key. Without: the process default, which only
+    exists when a key is configured locally.
+    """
+    registry = getattr(request.app.state, "registry", None)
+    if registry is None:
+        pipeline = getattr(request.app.state, "pipeline", None)
+        if pipeline is None:
+            raise HTTPException(status_code=503, detail="pipeline not ready")
+        return pipeline, (creds.client() if creds else None)
+    provider = creds.provider if creds else registry.default_provider
     try:
-        result = await asyncio.wait_for(
-            run_in_threadpool(pipeline.ask, question, bypass_cache=body.bypass_cache),
-            timeout=server.request_timeout_seconds,
+        pipeline = registry.for_provider(provider)
+    except LLMError as exc:
+        raise http_error(exc) from None
+    return pipeline, (creds.client() if creds else None)
+
+
+@router.post("/ask")
+async def ask(body: AskRequest, request: Request) -> Any:
+    """Answer one question and return the page's payload (`api/payload.py`).
+
+    Credentials are required when the server runs in BYOK mode (`BYOK_ONLY=true`), and accepted
+    but optional otherwise, so the same route serves the localhost build and the public demo.
+    `?debug=1` adds the full pipeline payload, in dev environments only.
+    """
+    server = request.app.state.app_config.server
+    settings = request.app.state.settings
+    question = validate_question(body.question, server.max_question_chars)
+    creds = credentials_from(request) if settings.byok or request.headers.get(KEY_HEADER) else None
+    pipeline, client = _pipeline_and_client(request, creds)
+    with use_key(creds.key if creds else None):
+        try:
+            result = await asyncio.wait_for(
+                run_in_threadpool(
+                    pipeline.ask, question, bypass_cache=body.bypass_cache, client=client
+                ),
+                timeout=server.request_timeout_seconds,
+            )
+        except TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail=f"request exceeded {server.request_timeout_seconds:g}s; the model "
+                "provider may be backing off — try again or ask a cached question",
+            ) from None
+        except LLMError as exc:
+            # A model failure inside the graph degrades instead of raising; reaching here means
+            # the request could not run at all (bad key, provider unreachable, no client).
+            raise http_error(exc) from None
+        full = to_response(result, pipeline.store)
+        payload = answer_payload(
+            result,
+            [
+                b
+                for b in result.context.blocks
+                if b.block_id in {c.block_id for c in full.citations}
+            ],
+            pipeline.store,
         )
-    except TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail=f"request exceeded {server.request_timeout_seconds:g}s; the model provider "
-            "may be backing off — try again or ask a cached question",
-        ) from None
-    return to_response(result, pipeline.store)
+        # The localhost build keeps the full pipeline payload (the debug view depends on it);
+        # a deployed BYOK server returns only what the page renders.
+        if settings.is_dev and not settings.byok_only:
+            payload["debug"] = full.model_dump(mode="json")
+        return payload
 
 
 @router.get("/figures/{figure_id}")

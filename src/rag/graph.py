@@ -53,7 +53,7 @@ from rag.core.config import (
 )
 from rag.core.ledger import UsageLedger
 from rag.core.logging import get_logger
-from rag.core.settings import Settings, get_settings
+from rag.core.settings import Settings, SettingsError, get_settings
 from rag.core.traces import Trace, TraceWriter, rss_mb
 from rag.llm import LLMCallError, LLMClient, LLMError
 from rag.query.analyze import Analysis, ExpansionSettings, analyze
@@ -93,6 +93,7 @@ class PipelineState(TypedDict, total=False):
     latency_ms_by_node: dict[str, int]
     error: str | None
     degraded: bool
+    client: LLMClient | None
 
 
 class PipelineResult(BaseModel):
@@ -202,7 +203,10 @@ class Pipeline:
         self.thresholds = thresholds or load_thresholds_config(settings=self.settings)
         self.models = models or load_models_config(settings=self.settings)
         self.store = store or get_store()
-        self.client = client or LLMClient(self.settings, self.models)
+        # `client=None` is the deployed (bring-your-own-key) shape: the process holds no
+        # credential and every `ask()` supplies the caller's client (F2). Locally the default
+        # client is built once from `.env`, as before.
+        self.client = client if client is not None else self._default_client()
         self.extractor = extractor or get_slot_extractor()
         self.reranker = reranker
         self.calculator = Calculator(RowFactSource(self.store.chunks.values()))
@@ -262,6 +266,21 @@ class Pipeline:
             default_entity=self.extractor.calendar.entity,
         )
         self.graph = self._build()
+
+    def _default_client(self) -> LLMClient | None:
+        """The process-wide client, or None when no key is configured (BYOK deployments)."""
+        try:
+            return LLMClient(self.settings, self.models)
+        except SettingsError as exc:
+            log.info("no process-wide model client (%s); every request must bring a key", exc)
+            return None
+
+    def client_for(self, state: PipelineState) -> LLMClient:
+        """The client this request must use: the caller's, else the process default."""
+        client = state.get("client") or self.client
+        if client is None:
+            raise LLMError("no model client for this request: a provider key is required")
+        return client
 
     # -- nodes ------------------------------------------------------------------------
 
@@ -379,7 +398,7 @@ class Pipeline:
         decision = scope_gate(
             state["question"],
             state["slots"],
-            client=self.client if self.thresholds.expansion.llm_fallback else None,
+            client=self.client_for(state) if self.thresholds.expansion.llm_fallback else None,
             request_id=state["request_id"],
         )
         out: dict[str, Any] = {"scope": decision}
@@ -422,7 +441,7 @@ class Pipeline:
         analysis = analyze(
             state["question"],
             state["slots"],
-            client=self.client,
+            client=self.client_for(state),
             request_id=state["request_id"],
             settings=self.expansion_settings,
             extractor=self.extractor,
@@ -485,7 +504,7 @@ class Pipeline:
                 intent=a.intent,
                 metrics=self.required_metrics(state["slots"], a.intent),
                 context_budget=self.context_budget,
-                client=self.client,
+                client=self.client_for(state),
                 request_id=state["request_id"],
                 mode=self.compression_mode,
             )
@@ -539,7 +558,7 @@ class Pipeline:
             notes.append(f"{slots.period_note}; say so in the answer.")
         try:
             answer, role = generate_answer(
-                self.client,
+                self.client_for(state),
                 state["question"],
                 state["context"],
                 intent=state["analysis"].intent,
@@ -639,10 +658,19 @@ class Pipeline:
     # -- entry point ------------------------------------------------------------------
 
     def ask(
-        self, question: str, *, bypass_cache: bool = False, request_id: str | None = None
+        self,
+        question: str,
+        *,
+        bypass_cache: bool = False,
+        request_id: str | None = None,
+        client: LLMClient | None = None,
     ) -> PipelineResult:
+        """Answer one question. `client` overrides the process default for this request only
+        (F2 bring-your-own-key); the ledger it writes to is the caller's client's."""
         request_id = request_id or uuid.uuid4().hex[:12]
         started = time.perf_counter()
+        # Every client — the process default and each per-request BYOK one — appends to the
+        # same ledger file, so token accounting reads it whichever client ran.
         ledger_before = self.ledger.count()
         state: PipelineState = {
             "question": question.strip(),
@@ -650,6 +678,7 @@ class Pipeline:
             "bypass_cache": bypass_cache,
             "attempts": 0,
             "latency_ms_by_node": {},
+            "client": client,
         }
         error: str | None = None
         try:

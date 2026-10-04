@@ -5,7 +5,9 @@ Every check is a pure function returning a `CheckResult`, so the same code runs 
 fatal: a bind address that is not loopback (`bind`) and an index whose manifest does not agree
 with itself (`index`). The rest are warnings, printed and exposed but never blocking.
 
-    bind      app.yaml `server.host` is 127.0.0.1 / localhost / ::1 (D-44)
+    bind      app.yaml `server.host` is 127.0.0.1 / localhost / ::1 (D-44), unless this is the
+              deployed container (`PUBLIC_DEPLOY=true`), where the platform is the boundary
+    public    a public deployment carries no key of its own (`BYOK_ONLY`) and no admin routes
     admin     admin + dev-clock routes are enabled only when the environment is `dev`
     secrets   the active profile's providers all have a key in `.env` (names only, never values)
     index     manifest present, all sidecars present, `corpus_version` recomputes from the
@@ -60,13 +62,41 @@ def is_loopback_client(host: str | None) -> bool:
         return True
 
 
-def check_bind(host: str) -> CheckResult:
+def check_bind(host: str, *, public: bool = False) -> CheckResult:
+    """Loopback unless this is the deployed container, where the platform is the boundary."""
+    if public:
+        return CheckResult("bind", True, f"server.host={host!r} (public deployment)", fatal=True)
     ok = host in LOOPBACK_HOSTS
     return CheckResult(
         "bind",
         ok,
         f"server.host={host!r}"
         + ("" if ok else " — this build is localhost-only (D-44); use 127.0.0.1"),
+        fatal=True,
+    )
+
+
+def check_public_safety(settings: Settings, app_cfg: AppConfig) -> CheckResult:
+    """A public server must carry no key of its own and no admin surface (F2).
+
+    Fatal: getting this wrong means strangers spending the owner's model quota, or purging the
+    cache and moving the clock from the open internet.
+    """
+    if not settings.public_deploy:
+        return CheckResult("public", True, "localhost build: loopback guard active", fatal=True)
+    problems = []
+    if not settings.byok_only:
+        problems.append(
+            "PUBLIC_DEPLOY without BYOK_ONLY — every visitor would spend the server's key"
+        )
+    if app_cfg.dev_clock_enabled:
+        problems.append(f"admin routes enabled in env={app_cfg.env!r}")
+    if problems:
+        return CheckResult("public", False, "; ".join(problems), fatal=True)
+    return CheckResult(
+        "public",
+        True,
+        "public deployment: bring-your-own-key enforced, admin routes disabled",
         fatal=True,
     )
 
@@ -157,7 +187,8 @@ def run_startup_checks(
     alias = thresholds.retrieval.embedder
     index_dir = index_dir or index_dir_for(settings.data_dir, alias)
     return [
-        check_bind(app_cfg.server.host),
+        check_bind(app_cfg.server.host, public=settings.public_deploy),
+        check_public_safety(settings, app_cfg),
         check_admin_gating(app_cfg),
         check_secrets(settings, models),
         check_index(index_dir, alias),
@@ -173,6 +204,7 @@ __all__ = [
     "StartupCheckError",
     "check_admin_gating",
     "check_bind",
+    "check_public_safety",
     "check_index",
     "check_secrets",
     "fatal_failures",

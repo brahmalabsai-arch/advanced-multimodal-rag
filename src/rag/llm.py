@@ -24,7 +24,7 @@ from typing import Any, TypeVar
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 from tenacity import RetryCallState, Retrying, retry_if_exception, stop_after_attempt
 from tenacity.wait import wait_exponential_jitter
 
@@ -32,7 +32,7 @@ from rag.core.config import ModelsConfig, Profile, Role, RoleModel, load_models_
 from rag.core.ledger import UsageLedger, UsageRecord
 from rag.core.logging import get_logger
 from rag.core.pacing import RateLimiter
-from rag.core.settings import Settings, get_settings
+from rag.core.settings import PROVIDER_KEY_FIELDS, Settings, get_settings
 from rag.core.tokens import estimate_messages_tokens
 
 log = get_logger(__name__)
@@ -40,6 +40,16 @@ log = get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+# Bring-your-own-key (F2): the names the UI sends in `X-Provider` → the provider id used by
+# `Settings.api_key_for` → the `models.yaml` profile that serves it. Adding a provider means
+# adding a profile, not a code path.
+PROVIDERS: dict[str, str] = {"groq": "groq", "anthropic": "anthropic", "gemini": "google"}
+PROVIDER_PROFILES: dict[str, str] = {
+    "groq": "groq_build",
+    "anthropic": "anthropic",
+    "gemini": "gemini",
+}
 # A retry-after longer than this (daily-quota 429s say "try again in 19m") is not worth blocking
 # a request for; the call fails fast and a later cache-driven re-run picks the item up.
 MAX_RETRY_AFTER_SECONDS = 120.0
@@ -68,6 +78,10 @@ class LLMJSONError(LLMError):
         self.errors = errors
 
 
+class UnknownProviderError(LLMError):
+    """The caller asked for a provider this build does not serve."""
+
+
 class LLMCallError(LLMError):
     """The provider call failed after all retries. `status_code` carries the provider's HTTP
     status when there was one, so the degrade path can say *why* (429 vs 400 vs outage)."""
@@ -82,6 +96,20 @@ class LLMCallError(LLMError):
 
 
 # ----------------------------------------------------------------------------- helpers
+
+
+def profile_for_provider(provider: str, models: ModelsConfig) -> str:
+    """The `models.yaml` profile that serves a UI provider name, or `UnknownProviderError`."""
+    name = PROVIDER_PROFILES.get(provider)
+    if name is None:
+        raise UnknownProviderError(
+            f"Unknown provider {provider!r}; this build serves {sorted(PROVIDER_PROFILES)}"
+        )
+    if name not in models.profiles:
+        raise UnknownProviderError(
+            f"Provider {provider!r} needs profile {name!r}, which is not in models.yaml"
+        )
+    return name
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -229,6 +257,54 @@ class LLMClient:
         # Fail fast (plan Phase 0): every provider the active profile uses must have a key.
         for provider in sorted(self.profile.providers()):
             self.settings.api_key_for(provider)
+
+    # -- bring-your-own-key -------------------------------------------------------------
+
+    @classmethod
+    def for_request(
+        cls,
+        provider: str,
+        api_key: str,
+        *,
+        settings: Settings | None = None,
+        models_config: ModelsConfig | None = None,
+        **kwargs: Any,
+    ) -> LLMClient:
+        """A client that uses the caller's key, for one request (F2, bring-your-own-key).
+
+        The environment is not consulted: the returned client carries a `Settings` copy whose
+        only credential is `api_key`, and a `ModelsConfig` copy whose active profile is the one
+        that serves `provider`. Nothing is cached process-wide, so two visitors never share a
+        key, a rate limiter or a chat-model object.
+        """
+        profile_name = profile_for_provider(provider, models_config or load_models_config())
+        base = settings or get_settings()
+        field = PROVIDER_KEY_FIELDS[PROVIDERS[provider]]
+        blanked = dict.fromkeys(PROVIDER_KEY_FIELDS.values())  # drop any key from .env
+        scrubbed = base.model_copy(
+            update={**blanked, field: SecretStr(api_key), "model_profile": profile_name}
+        )
+        models = (models_config or load_models_config(settings=scrubbed)).model_copy(
+            update={"active_profile": profile_name}
+        )
+        return cls(scrubbed, models, **kwargs)
+
+    def smoke_test(self, role: Role = "small", *, request_id: str | None = None) -> str:
+        """Cheapest possible call that proves the key works: one token out. Returns the model id.
+
+        `max_tokens=1` is the point — a rejected key costs the caller nothing, and an accepted
+        one costs a single output token. Reasoning models spend hidden tokens before any visible
+        output, so an empty reply is still a success: the call was authorised, which is all this
+        asks. Provider errors propagate as `LLMError` for the caller to map to a status code.
+        """
+        self._invoke(
+            self._messages("ping", None),
+            role,
+            json_mode=False,
+            request_id=request_id,
+            max_tokens=1,
+        )
+        return self.model_id(role)
 
     # -- public API ---------------------------------------------------------------------
 

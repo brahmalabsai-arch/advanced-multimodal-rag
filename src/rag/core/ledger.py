@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rag.core.logging import redact
+
 UsageStatus = Literal["ok", "invalid_json", "rate_limited", "error"]
 
 
@@ -41,7 +43,8 @@ class UsageLedger:
         self._lock = threading.Lock()
 
     def append(self, record: UsageRecord) -> None:
-        line = record.model_dump_json(exclude_none=True)
+        # A provider error can echo the request back, Authorization header included (F2).
+        line = redact(record.model_dump_json(exclude_none=True))
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as fh:
