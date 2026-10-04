@@ -2,7 +2,7 @@
 
 Phase 6 flow:
 
-    slots → cache_lookup ─┬─ L1 / L2 hit ──────────────────────────────────────────→ END
+    condense → slots → cache_lookup ─┬─ L1 / L2 hit ──────────────────────────────────────────→ END
                           └─ miss / bypass → scope_gate ─┬─ OUT_OF_SCOPE ─────→ cache_write → END
                                                          └─ in scope → analyze → retrieve
                                 → rerank → compress → calculate → assemble → generate
@@ -12,6 +12,10 @@ Phase 6 flow:
 Nodes are plain functions over `PipelineState`. The two cache nodes wrap the Phase 4/5 core:
 `cache_lookup` needs the slots (L1 key, slot guard) so it sits after `slots`; `cache_write`
 applies the admission policy after verification. `bypass_cache` skips both.
+
+`condense` (D-71) runs first: a follow-up ("and gross profit?") is rewritten into a standalone
+question from the turns the page sends, and every later node — the cache included — works on that
+standalone question. A question that does not need the conversation costs no model call.
 
 `complete` (architecture §4.12b) checks the answer addressed every part of the question: rules
 over the slots and calculations first, then, for a question with several asks, one small-model
@@ -53,6 +57,7 @@ from rag.core.clock import Clock, get_clock
 from rag.core.config import (
     ModelsConfig,
     ThresholdsConfig,
+    load_app_config,
     load_models_config,
     load_thresholds_config,
 )
@@ -60,9 +65,10 @@ from rag.core.ledger import UsageLedger
 from rag.core.logging import get_logger
 from rag.core.settings import Settings, SettingsError, get_settings
 from rag.core.traces import Trace, TraceWriter, rss_mb
-from rag.llm import LLMCallError, LLMClient, LLMError
+from rag.llm import DAILY_LIMIT_MESSAGE, LLMCallError, LLMClient, LLMError
 from rag.query.analyze import Analysis, ExpansionSettings, analyze
 from rag.query.assemble import AssembledContext, assemble_context, block_body
+from rag.query.condense import CondenseResult, Turn, condense
 from rag.query.coverage import CoverageResult, check_coverage
 from rag.query.generate import Answer, generate_answer
 from rag.query.rerank import RerankDecision, Reranker, rerank_node
@@ -80,6 +86,9 @@ BARE_PROFIT = {"profit", "profits"}
 
 class PipelineState(TypedDict, total=False):
     question: str
+    asked: str
+    history: list[Turn]
+    condense: CondenseResult
     request_id: str
     bypass_cache: bool
     slots: QuerySlots
@@ -101,12 +110,15 @@ class PipelineState(TypedDict, total=False):
     latency_ms_by_node: dict[str, int]
     error: str | None
     degraded: bool
+    daily_quota: bool
     client: LLMClient | None
 
 
 class PipelineResult(BaseModel):
     request_id: str
-    question: str
+    question: str = Field(description="the question answered: standalone after condensation")
+    asked: str | None = Field(default=None, description="the question as typed")
+    condense: CondenseResult | None = None
     answer: Answer
     intent: str
     intent_rule: str | None = None
@@ -136,6 +148,9 @@ class PipelineResult(BaseModel):
         default=False,
         description="the model call failed and the answer is a retrieval-only view (§13)",
     )
+    daily_quota: bool = Field(
+        default=False, description="the failure was the key's spent daily quota (D-73)"
+    )
 
 
 def _timed(state: PipelineState, node: str, started: float) -> dict[str, int]:
@@ -158,7 +173,9 @@ def degraded_answer(context: AssembledContext, error: LLMError) -> Answer:
     excerpt is copied from the context, never generated; the block ids go into `citations` so
     the UI renders them. Confidence is `low` and the result is never admitted to the cache.
     """
-    if isinstance(error, LLMCallError) and error.rate_limited:
+    if isinstance(error, LLMCallError) and error.daily_quota:
+        why = DAILY_LIMIT_MESSAGE
+    elif isinstance(error, LLMCallError) and error.rate_limited:
         why = (
             "The model provider is rate-limiting this account (HTTP 429) and the retry budget "
             "is spent, so no generated answer is available right now."
@@ -213,6 +230,7 @@ class Pipeline:
     ):
         self.settings = settings or get_settings()
         self.thresholds = thresholds or load_thresholds_config(settings=self.settings)
+        self.conversation = load_app_config(settings=self.settings).server.conversation
         self.models = models or load_models_config(settings=self.settings)
         self.store = store or get_store()
         # `client=None` is the deployed (bring-your-own-key) shape: the process holds no
@@ -306,6 +324,33 @@ class Pipeline:
         return client
 
     # -- nodes ------------------------------------------------------------------------
+
+    def node_condense(self, state: PipelineState) -> dict[str, Any]:
+        """Make a follow-up standalone (D-71). Rules decide first; the rewrite is one `small`
+        call and only for a question that cannot be read without the conversation."""
+        t0 = time.perf_counter()
+        asked = state["question"]
+        history = state.get("history") or []
+        client: LLMClient | None
+        try:
+            client = self.client_for(state)
+        except LLMError:
+            client = None
+        result = condense(
+            asked,
+            history,
+            self.extractor.extract(asked),
+            client=client,
+            request_id=state["request_id"],
+            max_turns=self.conversation.max_turns,
+            max_tokens=self.conversation.max_tokens,
+        )
+        return {
+            "question": result.question,
+            "asked": asked,
+            "condense": result,
+            "latency_ms_by_node": _timed(state, "condense", t0),
+        }
 
     def node_slots(self, state: PipelineState) -> dict[str, Any]:
         t0 = time.perf_counter()
@@ -616,6 +661,7 @@ class Pipeline:
                 "retry_note": None,
                 "error": error,
                 "degraded": True,
+                "daily_quota": isinstance(exc, LLMCallError) and exc.daily_quota,
                 "latency_ms_by_node": _timed(state, "generate", t0),
             }
         return {
@@ -679,6 +725,7 @@ class Pipeline:
 
     def _build(self):
         g = StateGraph(PipelineState)
+        g.add_node("condense", self.node_condense)
         g.add_node("slots", self.node_slots)
         g.add_node("cache_lookup", self.node_cache_lookup)
         g.add_node("cache_write", self.node_cache_write)
@@ -692,7 +739,8 @@ class Pipeline:
         g.add_node("generate", self.node_generate)
         g.add_node("verify", self.node_verify)
         g.add_node("complete", self.node_complete)
-        g.add_edge(START, "slots")
+        g.add_edge(START, "condense")
+        g.add_edge("condense", "slots")
         g.add_edge("slots", "cache_lookup")
         g.add_conditional_edges(
             "cache_lookup", self.route_after_cache, {END: END, "scope": "scope"}
@@ -729,6 +777,7 @@ class Pipeline:
         bypass_cache: bool = False,
         request_id: str | None = None,
         client: LLMClient | None = None,
+        history: list[Turn] | None = None,
     ) -> PipelineResult:
         """Answer one question. `client` overrides the process default for this request only
         (F2 bring-your-own-key); the ledger it writes to is the caller's client's."""
@@ -744,6 +793,7 @@ class Pipeline:
             "attempts": 0,
             "latency_ms_by_node": {},
             "client": client,
+            "history": list(history or []),
         }
         error: str | None = None
         try:
@@ -786,7 +836,9 @@ class Pipeline:
 
         result = PipelineResult(
             request_id=request_id,
-            question=state["question"],
+            question=final.get("question") or state["question"],
+            asked=state["question"],
+            condense=final.get("condense"),
             answer=answer,
             intent=final["analysis"].intent,
             intent_rule=final["analysis"].rule,
@@ -811,6 +863,7 @@ class Pipeline:
             corpus_version=self.store.corpus_version,
             warning=warning,
             degraded=bool(final.get("degraded")),
+            daily_quota=bool(final.get("daily_quota")),
         )
         self._write_trace(result, error)
         if cache_info.tier not in {"L1", "L2"}:
@@ -886,6 +939,7 @@ class Pipeline:
             "generator_role": "-",
             "error": message,
             "degraded": True,
+            "daily_quota": isinstance(exc, LLMCallError) and exc.daily_quota,
             # the lookup ran (and missed, or generation would not have been reached); the
             # degraded answer is never admitted (§5.6 rule 1)
             "cache_info": state.get("cache_info")
@@ -905,6 +959,8 @@ class Pipeline:
                     request_id=r.request_id,
                     model_profile=self.models.active_profile,
                     query=r.question,
+                    asked=r.asked if r.asked != r.question else None,
+                    condense_reason=r.condense.reason if r.condense else None,
                     slots=r.slots.model_dump(exclude={"matches", "normalized_text"}),
                     clock_offset_s=r.cache.clock_offset_s,
                     cache_tier=r.cache.tier,

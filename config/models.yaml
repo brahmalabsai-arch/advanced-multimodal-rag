@@ -67,7 +67,8 @@ profiles:
       `MODEL_PROFILE=groq_qwen_large eval/run_eval.py --ids ...` for the generator check
       (docs/reports/generator_check.md). Not for serving.
 
-  anthropic:                        # TEMPLATE — inactive until model switch (F1). Needs API billing.
+  anthropic:                        # Visitors' Anthropic keys (BYOK, D-66). Ids not re-verified live since
+                                    # the Phase 4 evaluation (no Anthropic key at hand on 2026-10-04).
     small:  {provider: anthropic, model: claude-haiku-4-5-20251001}
     large:  {provider: anthropic, model: claude-sonnet-5}      # bake-off alternative: claude-opus-5
     vision: {provider: anthropic, model: claude-sonnet-5}
@@ -75,13 +76,27 @@ profiles:
     structured_output: native
     pacing: {rpm: 50, tpm: 40000}   # placeholder; read from the Anthropic console at switch time
 
-  gemini:                           # TEMPLATE — inactive until model switch (F1). Verify ids at switch.
-    small:  {provider: google, model: gemini-2.5-flash-lite}
-    large:  {provider: google, model: gemini-2.5-pro}
-    vision: {provider: google, model: gemini-2.5-pro}
+  gemini:                           # Visitors' Gemini keys (BYOK, D-66). Checked 2026-10-04 with a free AI
+                                    # Studio key (D-72): the 2.5 ids are retired for new users (404), Pro has
+                                    # no free quota (429), and gemini-3.8-flash allows 20 requests a day —
+                                    # a handful of questions. flash-lite serves every role: 4-6 s an answer,
+                                    # verified and complete on a five-turn conversation incl. the diagram.
+    small:
+      provider: google
+      model: gemini-3.5-flash-lite
+      # thinking counts against max_output_tokens and adds latency
+      provider_kwargs: {thinking_level: minimal}
+    large:
+      provider: google
+      model: gemini-3.5-flash-lite
+      provider_kwargs: {thinking_level: low}
+    vision:
+      provider: google
+      model: gemini-3.5-flash-lite             # read the five-layer-cake diagram correctly in the check
+      provider_kwargs: {thinking_level: low}
     context_budget_tokens: 6000
     structured_output: native
-    pacing: {rpm: 15, tpm: 250000} # placeholder; read from AI Studio at switch time
+    pacing: {rpm: 10, tpm: 250000}  # free-tier Flash; each visitor's own key limits apply on top
 
 ingestion_enrichment:
   figures: vision                   # role name, resolved through the active profile (§7.3)

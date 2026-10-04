@@ -725,7 +725,7 @@ def test_pipeline_cache_walkthrough_with_fake_llm(tmp_path: Path) -> None:
     assert r2.cache_tier == "L1" and calls["n"] == 1 and r2.answer == r.answer
     assert r2.context.blocks[0].block_id == "C1" and r2.tokens_by_model == {}
     assert r2.generator_role == "cache" and r2.cache.origin_request_id == r.request_id
-    assert r2.latency_ms_by_node.keys() == {"slots", "cache_lookup"}
+    assert r2.latency_ms_by_node.keys() == {"condense", "slots", "cache_lookup"}
     # step 3: "restart" → fresh L1 on the same L2 directory → L2 hit, promoted to L1
     p2 = Pipeline(settings=settings, client=llm, clock=clock, cache=service())
     r3 = p2.ask(q1)

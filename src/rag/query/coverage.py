@@ -222,7 +222,7 @@ def self_check(
         role="small",
         system=SELF_CHECK_SYSTEM,
         request_id=request_id,
-        max_tokens=400,
+        max_tokens=600,  # hidden reasoning counts against it (see condense.rewrite)
     )
 
 

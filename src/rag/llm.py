@@ -54,6 +54,16 @@ PROVIDER_PROFILES: dict[str, str] = {
 # a request for; the call fails fast and a later cache-driven re-run picks the item up.
 MAX_RETRY_AFTER_SECONDS = 120.0
 DEFAULT_EXPECTED_OUTPUT_TOKENS = 512
+# the per-call output cap, by provider: LangChain passes bound kwargs to the provider SDK as-is
+MAX_TOKENS_PARAM: dict[str, str] = {"google": "max_output_tokens"}
+# A 429 that names a per-day quota: Groq says "tokens per day (TPD)" / "requests per day (RPD)",
+# Google's quota id is "GenerateRequestsPerDayPerProjectPerModel-FreeTier". Waiting a minute
+# does not help with these, so the visitor is told the truth instead (D-73).
+_DAILY_QUOTA = re.compile(r"per[\s-]?day|PerDay|\b[TR]PD\b|daily (?:limit|quota)", re.IGNORECASE)
+DAILY_LIMIT_MESSAGE = (
+    "This API key's daily limit has been hit. Please check your API console, or change the "
+    "provider. Your chat so far is kept when you do."
+)
 _TRY_AGAIN_IN = re.compile(r"try again in\s+([0-9.]+)\s*(ms|s|m)\b", re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
@@ -94,6 +104,11 @@ class LLMCallError(LLMError):
     def rate_limited(self) -> bool:
         return self.status_code == 429
 
+    @property
+    def daily_quota(self) -> bool:
+        """A 429 for a spent *daily* quota, as opposed to a per-minute limit."""
+        return self.rate_limited and bool(_DAILY_QUOTA.search(str(self)))
+
 
 # ----------------------------------------------------------------------------- helpers
 
@@ -113,17 +128,31 @@ def profile_for_provider(provider: str, models: ModelsConfig) -> str:
 
 
 def _status_code(exc: BaseException) -> int | None:
-    code = getattr(exc, "status_code", None)
-    if code is None:
-        response = getattr(exc, "response", None)
-        code = getattr(response, "status_code", None)
-    return int(code) if isinstance(code, int) else None
+    """The provider's HTTP status. Groq and Anthropic put it on the exception; LangChain's
+    Google wrapper does not — it sits on the cause, Google's `ClientError.code` — so the cause
+    chain is followed. `code` is read only when it is an HTTP status and the exception is not
+    an OS error, whose `errno` would otherwise pass for one."""
+    current: BaseException | None = exc
+    for _ in range(4):
+        if current is None:
+            break
+        code = getattr(current, "status_code", None)
+        if code is None:
+            code = getattr(getattr(current, "response", None), "status_code", None)
+        if code is None and not isinstance(current, OSError):
+            code = getattr(current, "code", None)
+        if isinstance(code, int) and 100 <= code < 600:
+            return code
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def is_retryable(exc: BaseException) -> bool:
     code = _status_code(exc)
     if code is not None:
         if code == 429:
+            if _DAILY_QUOTA.search(str(exc)):
+                return False  # a spent daily quota does not come back in a few seconds
             hinted = retry_after_seconds(exc)
             return hinted is None or hinted <= MAX_RETRY_AFTER_SECONDS
         return code in RETRYABLE_STATUS
@@ -548,7 +577,10 @@ class LLMClient:
         schema instruction + validation in Phase 0 (structured output adopted at F1)."""
         kwargs: dict[str, Any] = {}
         if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+            # Google's SDK names it `max_output_tokens` and rejects `max_tokens` outright
+            # (GenerateContentConfig forbids extra fields), before any network call
+            param = MAX_TOKENS_PARAM.get(self.profile.role(role).provider, "max_tokens")
+            kwargs[param] = max_tokens
         if json_mode and self.profile.role(role).provider == "groq":
             kwargs["response_format"] = {"type": "json_object"}
         return model.bind(**kwargs) if kwargs else model

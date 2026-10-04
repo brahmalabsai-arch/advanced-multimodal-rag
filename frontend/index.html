@@ -94,6 +94,10 @@
         <span class="wordmark">LedgerLens</span>
         <span class="doc-chip">NVIDIA annual report, FY2026</span>
       </div>
+      <button type="button" class="new-chat" id="new-chat" title="Start a new chat: the conversation so far is forgotten" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="new-chat__label">New chat</span>
+      </button>
       <button type="button" class="model-pill" id="model-pill" data-open="key" hidden></button>
     </header>
 
@@ -123,9 +127,10 @@
 </div>
 
 <!-- floating bubble: how the latest answer was built -->
-<button type="button" class="bubble" id="how-bubble" hidden>
+<button type="button" class="bubble" id="how-bubble" aria-label="How the agent answered this" title="How the agent answered this" hidden>
   <span class="bubble__dot" aria-hidden="true"></span>
-  How the agent answered this
+  <svg class="bubble__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h4a4 4 0 0 1 4 4v0M8 18h4a4 4 0 0 0 4-4v0"/></svg>
+  <span class="bubble__label">How the agent answered this</span>
 </button>
 
 <!-- ───────────────────── first-launch key modal ───────────────────── -->
@@ -213,7 +218,7 @@
       <div class="working">
         <p class="working__title">Reading the filing</p>
         <ol class="progress"></ol>
-        <p class="muted small working__warm" hidden>The server was asleep. Waking it takes up to a minute, and only happens on the first question.</p>
+        <p class="muted small working__warm" hidden>Still working. If the demo had gone to sleep, waking it takes up to a minute; later questions are faster.</p>
       </div>
     </article>
   </div>

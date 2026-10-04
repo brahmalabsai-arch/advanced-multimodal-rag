@@ -1,3 +1,5 @@
-# Installed only at the model switch (future step F1). Never installed during the Groq-only build.
+# Provider packages. Since the deploy (Phase 9) both are also in requirements-serve.txt, because
+# visitors may bring an Anthropic or a Gemini key; this file remains for a dev install without the
+# serving extras.
 langchain-anthropic>=1.0
 langchain-google-genai>=3.0

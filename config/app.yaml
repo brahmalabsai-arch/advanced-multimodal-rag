@@ -7,6 +7,9 @@ server:
   workers: 1
   max_question_chars: 1000
   request_timeout_seconds: 120
+  conversation:                    # in-session memory, D-71: what a follow-up rewrite may see
+    max_turns: 10                  # most recent turns sent with a follow-up (the tab keeps them all)
+    max_tokens: 1500               # cap on those turns; the oldest are dropped first
   rate_limit:                      # public deploy only (PUBLIC_DEPLOY=true); D-70
     enabled: true
     ask_per_minute: 6              # per visitor address; a person reading answers asks ~1-3

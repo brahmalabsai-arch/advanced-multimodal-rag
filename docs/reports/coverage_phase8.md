@@ -1,6 +1,6 @@
 # Coverage gate — deterministic modules (Phase 8)
 
-Generated 2026-10-04T08:21:33+00:00 · `scripts/coverage_gate.py` · gate: every module ≥ 90 % line coverage · full suite under `pytest-cov` (no network, no model calls).
+Generated 2026-10-04T12:48:53+00:00 · `scripts/coverage_gate.py` · gate: every module ≥ 90 % line coverage · full suite under `pytest-cov` (no network, no model calls).
 
 Rule G4 of the implementation plan makes these modules test-first because a silent financial error would hide in them. The gate runs the whole suite and reads only these files' coverage; the rest of the code is exercised by the same run but is not gated.
 

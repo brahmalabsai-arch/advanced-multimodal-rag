@@ -5,7 +5,9 @@
  * Expected API
  *   POST /api/key/test      headers: X-Provider, X-Provider-Key      -> 200 {model}
  *   POST /api/ask           headers: X-Provider, X-Provider-Key
- *                           body:    {question}                      -> 200 AnswerPayload
+ *                           body:    {question, history}             -> 200 AnswerPayload
+ *                           history: the last turns of this tab's conversation, compact:
+ *                                    [{question, standalone, summary}] (in-session memory)
  *   GET  /api/pages/{n}                                              -> page image
  *   GET  /api/figures/{id}                                           -> figure crop
  *
@@ -43,7 +45,7 @@
   var DEMO = new URLSearchParams(location.search).has("demo");
 
   var PROVIDER_LABELS = { groq: "Groq", anthropic: "Anthropic", gemini: "Gemini" };
-  var STORE = { provider: "ll.provider", key: "ll.key", model: "ll.model", answered: "ll.answered" };
+  var STORE = { provider: "ll.provider", key: "ll.key", model: "ll.model", answered: "ll.answered", thread: "ll.thread" };
   var session = { provider: "groq", key: "", model: "" };
 
   var el = function (id) { return document.getElementById(id); };
@@ -330,6 +332,7 @@
 
   function newTurn(question) {
     el("welcome").hidden = true;
+    el("new-chat").hidden = false;
     var node = el("turn-tpl").content.firstElementChild.cloneNode(true);
     node.querySelector(".msg-user").textContent = question;
     thread.appendChild(node);
@@ -355,8 +358,77 @@
         items[i].dataset.state = "active";
       }, i * 900));
     });
-    timers.push(setTimeout(function () { turn.querySelector(".working__warm").hidden = false; }, 7000));
+    // a fresh answer takes 10-15 s on the free instance, so only a wait well past that suggests
+    // the instance was asleep (waking takes up to a minute)
+    timers.push(setTimeout(function () { turn.querySelector(".working__warm").hidden = false; }, 20000));
     return function stop() { timers.forEach(clearTimeout); };
+  }
+
+  /* ── in-session memory ────────────────────────────────────────────────
+     The conversation lives in this tab only (sessionStorage): the server keeps nothing. Each
+     question carries the last turns in compact form, so a follow-up such as "and gross
+     profit?" can be read against them. A reload keeps the thread; New chat forgets it. */
+
+  var MEMORY_TURNS = 10;      // sent with a question; the server caps them again (app.yaml)
+  var THREAD_KEEP = 30;       // kept in the tab to redraw the thread after a reload
+
+  function storedThread() {
+    try { return JSON.parse(store.get(STORE.thread) || "[]") || []; } catch (e) { return []; }
+  }
+
+  function rememberTurn(question, payload) {
+    var copy = Object.assign({}, payload);
+    delete copy.debug;                       // dev-only and large; the page never needs it back
+    var thread = storedThread();
+    thread.push({ question: question, payload: copy });
+    store.set(STORE.thread, JSON.stringify(thread.slice(-THREAD_KEEP)));
+  }
+
+  function summaryOf(payload) {
+    var text = (payload.answer_markdown || "")
+      .replace(/\[[CK]\d+(?:\s*,\s*[CK]\d+)*\]/g, "")
+      .replace(/[*_`#>|]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    var head = payload.headline;
+    var lead = head && head.value ? head.value + " (" + (head.caption || "") + "). " : "";
+    return (lead + text).slice(0, 280);
+  }
+
+  function conversation() {
+    return storedThread().slice(-MEMORY_TURNS).map(function (t) {
+      return {
+        question: t.question,
+        standalone: t.payload.standalone_question || null,
+        summary: summaryOf(t.payload)
+      };
+    });
+  }
+
+  function newChat() {
+    if (busy) { return; }
+    store.del(STORE.thread);
+    Array.prototype.forEach.call(thread.querySelectorAll(".turn"), function (n) { n.remove(); });
+    inView.disconnect();
+    turns = [];
+    current = -1;
+    visible = {};
+    bubble.classList.remove("is-shown");
+    bubble.hidden = true;
+    el("welcome").hidden = false;
+    el("new-chat").hidden = true;
+    questionBox.value = "";
+    autosize();
+    questionBox.focus();
+  }
+
+  function restoreThread() {
+    var saved = storedThread();
+    if (!saved.length) { return; }
+    thread.classList.add("is-restoring");    // redraw without the entrance motion
+    saved.forEach(function (t) { renderAnswer(newTurn(t.question), t.question, t.payload); });
+    thread.scrollTop = thread.scrollHeight;
+    requestAnimationFrame(function () { thread.classList.remove("is-restoring"); });
   }
 
   function ask(question) {
@@ -381,7 +453,7 @@
       : fetch(API + "/api/ask", {
           method: "POST",
           headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-          body: JSON.stringify({ question: question })
+          body: JSON.stringify({ question: question, history: conversation() })
         }).then(handleResponse);
 
     request
@@ -389,6 +461,9 @@
         stop();
         renderAnswer(turn, question, payload);
         recordAnswer(question, payload);
+        // a retrieval-only view (model failed, or the key's daily limit) is not a turn a
+        // follow-up should build on
+        if (!payload.degraded) { rememberTurn(question, payload); }
       })
       .catch(function (err) { stop(); renderError(turn, question, err); })
       .finally(function () {
@@ -405,7 +480,8 @@
     return res.json().then(function (body) {
       err.detail = body && (body.detail || body.message);
       if (typeof err.detail !== "string") { err.detail = ""; }
-      err.limit = body && body.limit;          // "rate" | "busy" when this server refused it
+      // "rate" | "busy" when this server refused it; "daily" when the key's daily quota is spent
+      err.limit = (body && body.limit) || res.headers.get("X-Limit");
       throw err;
     }, function () { throw err; });
   }
@@ -474,7 +550,12 @@
     openImage(API + "/api/pages/" + n, "Page " + n, "Page " + n + " of the filing");
   });
 
+  function quotaMessage(payload) {
+    return payload.quota && payload.quota.limit === "daily" ? payload.quota.message : "";
+  }
+
   function noteFor(payload) {
+    if (quotaMessage(payload)) { return quotaMessage(payload); }
     if (payload.incomplete && payload.incomplete.length) {
       return "This answer does not cover every part of your question. Not answered: " + payload.incomplete.join("; ") + ". Try asking for it on its own.";
     }
@@ -504,7 +585,9 @@
     }
 
     var prose = make("div", "prose reveal");
-    prose.innerHTML = toHtml(linkMarkers(payload.answer_markdown, payload.citations));
+    var markdown = payload.answer_markdown || "";
+    if (quotaMessage(payload)) { markdown = markdown.replace(quotaMessage(payload), "").trim(); }
+    prose.innerHTML = toHtml(linkMarkers(markdown, payload.citations));
     card.appendChild(prose);
 
     (payload.figures || []).forEach(function (f) { card.appendChild(figureNode(f)); });
@@ -528,7 +611,7 @@
 
     var note = noteFor(payload);
     if (note) {
-      var warn = payload.degraded || payload.confidence === "low" || (payload.incomplete && payload.incomplete.length);
+      var warn = payload.degraded || payload.confidence === "low" || (payload.incomplete && payload.incomplete.length) || quotaMessage(payload);
       var n = make("p", "disclaimer reveal" + (warn ? " disclaimer--warn" : ""), note);
       card.appendChild(n);
     }
@@ -600,7 +683,11 @@
     var body = err.detail || "The request did not complete. Try again.";
     var offerKey = false;
 
-    if (err.limit === "rate") {
+    if (err.limit === "daily") {
+      title = "Daily limit reached";
+      body = err.detail;
+      offerKey = true;                       // "Change key" opens the provider choice
+    } else if (err.limit === "rate") {
       title = "One moment";
       body = err.detail;
     } else if (err.limit === "busy") {
@@ -804,10 +891,13 @@
 
   /* ── start ────────────────────────────────────────────────────────────── */
 
+  el("new-chat").addEventListener("click", newChat);
+
   loadKey();
   selectProvider(session.provider);
   showConnected();
   renderHistory();
+  restoreThread();
   placeForm("drawer");
   if (session.key) {
     questionBox.focus();
