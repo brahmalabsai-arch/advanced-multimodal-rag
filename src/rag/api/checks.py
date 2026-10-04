@@ -111,13 +111,25 @@ def check_admin_gating(app_cfg: AppConfig) -> CheckResult:
 
 
 def check_secrets(settings: Settings, models: ModelsConfig) -> CheckResult:
+    """Every provider the active profile uses has a key — unless the server runs BYOK_ONLY,
+    where every request brings its own and a server key is never read (D-66). There, having
+    none is the correct state; a key that is present anyway is reported, by name only, so one
+    left in a deployed environment does not go unnoticed."""
     profile = models.active()
-    missing = []
+    present, missing = [], []
     for provider in sorted(profile.providers()):
         field = PROVIDER_KEY_FIELDS.get(provider)
         secret = getattr(settings, field, None) if field else None
+        name = (field or provider).upper()
         if secret is None or not secret.get_secret_value().strip():
-            missing.append((field or provider).upper())
+            missing.append(name)
+        else:
+            present.append(name)
+    if settings.byok_only:
+        detail = "BYOK_ONLY: no server keys needed, every request brings its own"
+        if present:
+            detail += f" ({', '.join(present)} set but never used)"
+        return CheckResult("secrets", True, detail)
     ok = not missing
     return CheckResult(
         "secrets",

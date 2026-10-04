@@ -188,6 +188,27 @@ def test_check_secrets_names_missing_keys_without_values(settings: Settings) -> 
     assert r.ok and "secret-value" not in r.detail
 
 
+def test_check_secrets_passes_a_keyless_byok_deploy(settings: Settings) -> None:
+    """The deployed image carries no provider key by design; the check must not fail it (the
+    first CI deploy check did, on exactly this). A key left in that environment is named."""
+    models = load_models_config(settings=settings)
+    keyless = Settings(
+        _env_file=None, app_env="prod", byok_only=True, config_dir=settings.config_dir
+    )
+    r = checks.check_secrets(keyless, models)
+    assert r.ok and "no server keys needed" in r.detail and "never used" not in r.detail
+    stray = Settings(
+        _env_file=None,
+        app_env="prod",
+        byok_only=True,
+        groq_api_key="gsk_left_behind_0123456789",
+        config_dir=settings.config_dir,
+    )
+    r = checks.check_secrets(stray, models)
+    assert r.ok and "GROQ_API_KEY set but never used" in r.detail
+    assert "left_behind" not in r.detail
+
+
 def _write_index(tmp: Path, *, chunks: int = 3, tamper: str | None = None) -> Path:
     from rag.ingest.index import compute_corpus_version
 
