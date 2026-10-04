@@ -88,7 +88,7 @@ def test_api_rejects_binary_and_wordless_questions_before_readiness(api) -> None
 def test_request_timeout_answers_504(api, monkeypatch: pytest.MonkeyPatch) -> None:
     client, app = api
 
-    def slow_ask(question, *, bypass_cache=False):
+    def slow_ask(question, *, bypass_cache=False, client=None):
         time.sleep(0.5)
         raise AssertionError("the response must not wait for this")
 
@@ -103,7 +103,7 @@ def test_readyz_reports_startup_checks_and_limits(api) -> None:
     r = client.get("/readyz")
     body = r.json()
     names = [c["name"] for c in body["checks"]]
-    assert names == ["bind", "admin", "secrets", "index"]
+    assert names == ["bind", "public", "admin", "secrets", "index"]
     bind = body["checks"][0]
     assert bind["ok"] is True and bind["fatal"] is True
     # the pipeline is stubbed out, so readiness is false whatever the checks say
@@ -264,7 +264,7 @@ def test_run_startup_checks_on_the_real_tree(settings: Settings) -> None:
         load_models_config(settings=real),
         load_thresholds_config(settings=real),
     )
-    assert [r.name for r in results] == ["bind", "admin", "secrets", "index"]
+    assert [r.name for r in results] == ["bind", "public", "admin", "secrets", "index"]
     assert all(r.ok for r in results), [r for r in results if not r.ok]
     assert checks.fatal_failures(results) == []
 
@@ -481,11 +481,11 @@ def test_degraded_response_over_http_renders_citation_chips(
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["degraded"] is True and body["warning"]
-        assert body["answer"]["confidence"] == "low"
-        assert body["citations"] and body["citations"][0]["page_image_url"] == "/api/pages/141"
-        assert body["debug"]["verify"]["passed"] is False
-        assert "generate" in body["debug"]["latency_ms_by_node"]
+        assert body["degraded"] is True and body["debug"]["warning"]
+        assert body["confidence"] == "low"
+        assert body["citations"] and body["citations"][0]["page"] == 141
+        assert body["debug"]["debug"]["verify"]["passed"] is False
+        assert "generate" in body["debug"]["debug"]["latency_ms_by_node"]
 
 
 # ---------------------------------------------------------------- vision-unavailable path

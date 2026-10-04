@@ -1,18 +1,24 @@
 """Structured logging with API-key redaction (architecture §13: "API key leaked into logs").
 
-Two layers of defence:
+Three layers of defence:
 1. Known secret values (from `Settings.secret_values()`) are replaced wherever they appear.
 2. Provider key *shapes* (`gsk_…`, `sk-ant-…`, `AIza…`) are masked even if a key was never
    registered — e.g. one pasted into a prompt by mistake.
+3. The key of the request in flight (F2 bring-your-own-key), held in a context variable by
+   `use_key()` and applied by `redact()`. The trace writer and the usage ledger call `redact()`
+   before writing, so a visitor's key cannot reach disk even if its shape is unknown to layer 2.
+   Context variables follow the request into a worker thread, which is where the pipeline runs.
 """
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import IO, Any
 
@@ -54,6 +60,33 @@ class Redactor:
         if isinstance(value, BaseException):
             return self.redact_text(str(value))
         return value
+
+
+_SHAPE_REDACTOR = Redactor()
+_CURRENT_KEY: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "rag_current_provider_key", default=None
+)
+
+
+@contextmanager
+def use_key(key: str | None) -> Iterator[None]:
+    """Make `key` redactable for the duration of the block, and in threads it hands off to."""
+    token = _CURRENT_KEY.set(key or None)
+    try:
+        yield
+    finally:
+        _CURRENT_KEY.reset(token)
+
+
+def redact(value: Any) -> Any:
+    """Mask provider keys in anything about to be written to disk or handed to a caller.
+
+    Masks the in-flight request's key whatever its shape, plus the known provider key shapes,
+    recursing through dicts, lists, tuples and exceptions. Anything with no strings in it comes
+    back unchanged, so this is safe to call on any value.
+    """
+    key = _CURRENT_KEY.get()
+    return (Redactor([key]) if key else _SHAPE_REDACTOR).redact(value)
 
 
 class RedactingFilter(logging.Filter):

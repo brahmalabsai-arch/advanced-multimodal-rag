@@ -1,0 +1,38 @@
+# Render blueprint for the public demo (F2). Create it with New → Blueprint, pointed at this
+# repository; there are no environment variables to fill in, because there are no secrets: every
+# visitor brings their own model key and the server keeps none.
+#
+# Before the first deploy, publish the index and paste its download URL into INDEX_URL below:
+#   .venv/Scripts/python scripts/package_index.py
+#   gh release create v1.1-index dist/index.tar.gz --title "v1.1-index" --notes "Prebuilt index"
+#   gh release view v1.1-index --json assets -q '.assets[0].url'
+
+services:
+  - type: web
+    name: advanced-multimodal-rag
+    runtime: docker
+    plan: free                      # 512 MB / 0.1 CPU; sleeps after 15 idle minutes
+    region: oregon
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: false               # deploy on purpose, not on every push to main
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - eval/**
+        - tests/**
+        - progress_phase*.md
+    envVars:
+      - key: INDEX_URL
+        sync: false                 # set once in the dashboard, or hard-code the release URL
+      - key: APP_ENV
+        value: prod                 # admin and dev-clock routes answer 404
+      - key: BYOK_ONLY
+        value: "true"               # every request must carry the caller's key
+      - key: PUBLIC_DEPLOY
+        value: "true"               # the platform proxy is the boundary, not the loopback guard
+      - key: SERVER_HOST
+        value: 0.0.0.0
+      - key: PYTHONUNBUFFERED
+        value: "1"

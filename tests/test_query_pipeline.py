@@ -284,10 +284,15 @@ def test_figure_and_page_endpoints_validate_ids(client) -> None:
 
 
 def test_frontend_is_served(client) -> None:
+    """The page is mounted at the root, so its relative asset paths resolve, and the API and
+    health routes registered before the mount still win (F2)."""
     r = client.get("/")
-    assert r.status_code == 200 and "Balance Sheet Analysis" in r.text
-    assert client.get("/static/app.js").status_code == 200
-    assert client.get("/static/vendor/purify.min.js").status_code == 200
+    assert r.status_code == 200 and "<title>" in r.text
+    assert client.get("/app.js").status_code == 200
+    assert client.get("/app.css").status_code == 200
+    assert client.get("/vendor/purify.min.js").status_code == 200
+    assert client.get("/healthz").json()["status"] == "ok"
+    assert client.get("/api/trace/nope").status_code in {404, 503}
 
 
 @pytest.mark.skipif(
@@ -340,13 +345,13 @@ def test_ask_contract_with_loaded_pipeline_and_fake_llm(monkeypatch: pytest.Monk
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["answer"]["answer_markdown"].startswith("Total assets")
-        assert body["citations"][0]["block_id"] == "C1"
-        assert body["citations"][0]["page_image_url"] == "/api/pages/141"
-        assert body["debug"]["verify"]["passed"] is True
-        assert body["debug"]["candidates"][0]["chunk_id"] == "rowfact_p141_total_assets"
-        assert body["cache_tier"] == "bypassed"
-        t = c.get(f"/api/trace/{body['request_id']}")
+        assert body["answer_markdown"].startswith("Total assets")
+        assert body["citations"][0]["page"] == 141
+        assert body["debug"]["citations"][0]["page_image_url"] == "/api/pages/141"
+        assert body["debug"]["debug"]["verify"]["passed"] is True
+        assert body["debug"]["debug"]["candidates"][0]["chunk_id"] == "rowfact_p141_total_assets"
+        assert body["debug"]["cache_tier"] == "bypassed"
+        t = c.get(f"/api/trace/{body['debug']['request_id']}")
         assert t.status_code == 200 and t.json()["intent"] == "POINT_LOOKUP"
 
 
@@ -436,7 +441,7 @@ def test_debug_payload_exposes_slots_expansion_and_gate_decisions(
             },
         )
         assert r.status_code == 200, r.text
-        d = r.json()["debug"]
+        d = r.json()["debug"]["debug"]
         assert d["slots"]["formulas"] == ["current_ratio"]
         assert d["slots"]["fiscal_periods"] == ["FY2026"]
         assert d["scope"]["in_scope"] is True
@@ -448,7 +453,7 @@ def test_debug_payload_exposes_slots_expansion_and_gate_decisions(
         assert d["calculations"][0]["formula"] == "current_ratio"
         assert d["calculations"][0]["rounded"] == 3.91
         assert d["tokens_by_model"] and sum(t["calls"] for t in d["tokens_by_model"].values()) == 1
-        t = c.get(f"/api/trace/{r.json()['request_id']}").json()
+        t = c.get(f"/api/trace/{r.json()['debug']['request_id']}").json()
         assert t["slots"]["formulas"] == ["current_ratio"] and "rerank_applied" in t
 
 

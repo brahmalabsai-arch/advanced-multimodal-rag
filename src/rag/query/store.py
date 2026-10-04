@@ -5,6 +5,7 @@ Loaded once per process (FastAPI lifespan / CLI). No Docling, no PyTorch (P7).
 
 from __future__ import annotations
 
+import gc
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -40,6 +41,10 @@ class IndexStore:
         self._vectors: np.ndarray = np.asarray(got["embeddings"], dtype=np.float32)
         norms = np.linalg.norm(self._vectors, axis=1, keepdims=True)
         self._vectors = self._vectors / np.maximum(norms, 1e-12)
+        # Chroma materialises every vector as Python lists to answer that `get`; on a 512 MB
+        # instance the ~20 MB it leaves behind is worth reclaiming before serving (F2).
+        del got
+        gc.collect()
 
         self.chunks: dict[str, Chunk] = {}
         with (self.index_dir / "chunks.jsonl").open("r", encoding="utf-8") as fh:
@@ -55,7 +60,9 @@ class IndexStore:
         self.sentence_index: dict[str, int] = {
             s.sentence_id: i for i, s in enumerate(self.sentences)
         }
-        self.sentence_emb: np.ndarray = np.load(self.index_dir / "sentence_emb.npy")
+        # Loaded on first use: only the sentence-extraction compressor reads it, and on a small
+        # instance a request that never compresses should not pay 5 MB for it (F2).
+        self._sentence_emb: np.ndarray | None = None
 
         self.row_facts: dict[tuple[str, str], list[Chunk]] = {}
         for c in self.chunks.values():
@@ -75,6 +82,13 @@ class IndexStore:
             self.corpus_version,
             self.manifest.embedder,
         )
+
+    @property
+    def sentence_emb(self) -> np.ndarray:
+        """Sentence embeddings, memory-mapped on first access."""
+        if self._sentence_emb is None:
+            self._sentence_emb = np.load(self.index_dir / "sentence_emb.npy", mmap_mode="r")
+        return self._sentence_emb
 
     # -- lookups --------------------------------------------------------------------
 

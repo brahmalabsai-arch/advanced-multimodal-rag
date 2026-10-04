@@ -5,8 +5,9 @@ another corpus, prompt, model or retrieval configuration can never be served. Th
 
     corpus_version         index manifest (`data/index/<embedder>/manifest.json`)
     prompt_version         `PROMPT_VERSION` + hash of the answer system prompt
-    generator_model        "<large model>+<vision model>" of the active profile (VISUAL answers
-                           are produced by the vision role, so both ids matter)
+    generator_model        "<provider>:<large model>+<vision model>" of the active profile
+                           (VISUAL answers come from the vision role, so both ids matter; the
+                           provider prefix keeps BYOK visitors on separate entries, F2)
     retrieval_config_hash  parsed `thresholds.yaml` minus the `cache:` section (retrieval,
                            expansion, rerank incl. the reranker model, compression) plus
                            `cache.l2.embed_text`, the embedder alias, `glossary.yaml` and
@@ -70,8 +71,15 @@ def prompt_version() -> str:
 
 
 def generator_model(models: ModelsConfig) -> str:
+    """Provider + the two model ids that can produce an answer.
+
+    The provider is part of the key because of bring-your-own-key (F2): visitors share one L2
+    collection, and an answer generated on one provider must never be served to a request made
+    with another's key, even where the model ids happen to coincide.
+    """
     profile = models.active()
-    return f"{profile.large.model}+{profile.vision.model}"
+    provider = "+".join(sorted(profile.providers()))
+    return f"{provider}:{profile.large.model}+{profile.vision.model}"
 
 
 def retrieval_config_hash(

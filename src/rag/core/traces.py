@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rag.core.logging import redact
+
 
 def rss_mb() -> float | None:
     try:
@@ -67,7 +69,8 @@ class TraceWriter:
         self._lock = threading.Lock()
 
     def append(self, trace: Trace) -> None:
-        line = trace.model_dump_json(exclude_none=True)
+        # A failed request carries the provider's error text; redact before it reaches disk (F2).
+        line = redact(trace.model_dump_json(exclude_none=True))
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as fh:

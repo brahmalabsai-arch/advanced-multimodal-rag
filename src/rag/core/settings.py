@@ -45,10 +45,24 @@ class Settings(BaseSettings):
 
     model_profile: str = "groq_build"
     app_env: AppEnv = "dev"
+    # F2: the deployed build serves nobody from its own quota. With BYOK_ONLY=true every
+    # `/api/ask` must carry the caller's provider and key, and a key in the environment (if one
+    # is even present) is never used to answer a question.
+    byok_only: bool = False
+    # F2: set only in the deployed container. It turns off the loopback-only request guard
+    # (NFR-12), which exists for the localhost build and would refuse every visitor arriving
+    # through a platform proxy. It is refused unless `byok_only` is also set — a public server
+    # that still holds a key would spend the owner's quota on strangers.
+    public_deploy: bool = False
 
     config_dir: Path = Field(default=PROJECT_ROOT / "config")
     data_dir: Path = Field(default=PROJECT_ROOT / "data")
     log_level: str = "INFO"
+
+    @property
+    def byok(self) -> bool:
+        """True when requests must bring their own credentials."""
+        return self.byok_only
 
     @property
     def is_dev(self) -> bool:
