@@ -122,6 +122,9 @@ class PipelineResult(BaseModel):
     coverage: CoverageResult = Field(default_factory=CoverageResult)
     generation_attempts: int
     generator_role: str
+    generator_model: str | None = Field(
+        default=None, description="model id that wrote the answer; None for cache hits"
+    )
     tokens_by_model: dict[str, dict[str, int]] = Field(default_factory=dict)
     latency_ms_by_node: dict[str, int] = Field(default_factory=dict)
     total_latency_ms: int
@@ -282,6 +285,17 @@ class Pipeline:
             return LLMClient(self.settings, self.models)
         except SettingsError as exc:
             log.info("no process-wide model client (%s); every request must bring a key", exc)
+            return None
+
+    def _model_for(self, role: str | None, client: LLMClient | None) -> str | None:
+        """The model id behind a generator role, so the page names the model that wrote the
+        answer rather than whichever support call (analysis, compression, self-check) came
+        first in the usage ledger."""
+        if role not in {"large", "vision"}:
+            return None
+        try:
+            return (client or self.client).model_id(role)  # type: ignore[union-attr, arg-type]
+        except Exception:
             return None
 
     def client_for(self, state: PipelineState) -> LLMClient:
@@ -788,6 +802,7 @@ class Pipeline:
             coverage=coverage,
             generation_attempts=final.get("attempts", 0),
             generator_role=final.get("generator_role", "-"),
+            generator_model=self._model_for(final.get("generator_role"), client),
             tokens_by_model=tokens_by_model,
             latency_ms_by_node=final.get("latency_ms_by_node", {}),
             total_latency_ms=total_ms,

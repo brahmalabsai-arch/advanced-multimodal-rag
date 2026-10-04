@@ -7,6 +7,13 @@ server:
   workers: 1
   max_question_chars: 1000
   request_timeout_seconds: 120
+  rate_limit:                      # public deploy only (PUBLIC_DEPLOY=true); D-70
+    enabled: true
+    ask_per_minute: 6              # per visitor address; a person reading answers asks ~1-3
+    ask_per_hour: 60
+    key_test_per_minute: 5
+    max_in_flight: 2               # questions running at once across all visitors (0.1 CPU)
+    client_ip_headers: [cf-connecting-ip, true-client-ip]   # set by Cloudflare in front of Render
 env: ${APP_ENV:dev}
 dev_clock: {enabled_in: [dev], max_offset_days: 400}
 paths:

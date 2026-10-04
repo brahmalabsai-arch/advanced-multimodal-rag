@@ -387,7 +387,8 @@ def answer_payload(
     """Build the page's payload. `cited_blocks` are the context blocks the answer cited."""
     tokens_in = sum(t.get("in", 0) for t in result.tokens_by_model.values())
     tokens_out = sum(t.get("out", 0) for t in result.tokens_by_model.values())
-    model = next(iter(result.tokens_by_model), None)
+    # the model that wrote the answer, not the first one in the ledger (often a support call)
+    model = result.generator_model or next(iter(result.tokens_by_model), None)
     payload: dict[str, Any] = {
         "answer_markdown": result.answer.answer_markdown,
         "confidence": result.answer.confidence,
