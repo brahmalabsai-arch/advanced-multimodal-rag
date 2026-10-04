@@ -92,6 +92,7 @@ Answer payload — only `answer_markdown` is required; every other field degrade
   "figures":      [{"url": "/api/figures/p3_0", "caption": "AI Is a Five-Layer Cake", "page": 3}],
   "confidence":   "high",          // low → a caution line appears above the citations
   "degraded":     false,           // true → retrieval-only notice
+  "incomplete":   ["net income: change FY2025 to FY2026"],  // parts not answered → caution line
   "disclaimer":   "…",             // optional, shown when confidence is not low
   "trace": {
     "cache_tier": "miss",          // or "L1" / "L2"

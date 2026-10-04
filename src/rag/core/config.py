@@ -308,6 +308,15 @@ class CacheThresholds(BaseModel):
     sweep_interval_seconds: int = Field(gt=0)
 
 
+class CompletenessThresholds(BaseModel):
+    """The completeness check after verification (`query/coverage.py`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    self_check: bool = True  # one small-model call for questions with several asks
+
+
 class ThresholdsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -315,6 +324,7 @@ class ThresholdsConfig(BaseModel):
     expansion: ExpansionThresholds = Field(default_factory=ExpansionThresholds)
     rerank: RerankThresholds
     compression: CompressionThresholds
+    completeness: CompletenessThresholds = Field(default_factory=CompletenessThresholds)
     cache: CacheThresholds
 
 

@@ -53,6 +53,8 @@ class Trace(BaseModel):
     generation_attempts: int = 0
     verify_passed: bool | None = None
     verify_issues: list[str] = Field(default_factory=list)
+    coverage_method: str = "skipped"
+    coverage_missing: list[str] = Field(default_factory=list)
     admitted: bool = False
     answer_class: str | None = None
     confidence: str | None = None

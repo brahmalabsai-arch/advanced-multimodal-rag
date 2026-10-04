@@ -168,7 +168,7 @@ def test_version_keys_change_on_value_edit_not_on_comment(settings, tmp_path: Pa
     )
     # the provider prefix keeps BYOK visitors on separate entries (F2)
     assert base.generator_model == "groq:openai/gpt-oss-120b+qwen/qwen3.8-27b"
-    assert base.prompt_version.startswith("answer-v1-")
+    assert base.prompt_version.startswith("answer-v2-")
 
 
 # ---------------------------------------------------------------------------------- LFU
@@ -676,6 +676,12 @@ def test_pipeline_cache_walkthrough_with_fake_llm(tmp_path: Path) -> None:
                 content = (
                     '{"answer_markdown": "The 2026 annual meeting of stockholders is scheduled for June 24, 2026 [C1].", '
                     '"figures_used": [], "citations": ["C1"], "confidence": "high", "answer_class": "time_anchored"}'
+                )
+            elif "question: what were total assets as of jan 26, 2025" in text.lower():
+                # answer the period asked: the completeness check rejects the FY2026 figure here
+                content = (
+                    '{"answer_markdown": "Total assets were $111,601 million as of January 26, 2025 (fiscal 2025) [C1].", '
+                    '"figures_used": [], "citations": ["C1"], "confidence": "high", "answer_class": "filed_fact"}'
                 )
             else:
                 content = (

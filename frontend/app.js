@@ -466,6 +466,9 @@
   });
 
   function noteFor(payload) {
+    if (payload.incomplete && payload.incomplete.length) {
+      return "This answer does not cover every part of your question. Not answered: " + payload.incomplete.join("; ") + ". Try asking for it on its own.";
+    }
     if (payload.degraded) {
       return "The model could not be reached, so this shows the cited passages and computed figures without a written explanation.";
     }
@@ -516,7 +519,8 @@
 
     var note = noteFor(payload);
     if (note) {
-      var n = make("p", "disclaimer reveal" + (payload.degraded || payload.confidence === "low" ? " disclaimer--warn" : ""), note);
+      var warn = payload.degraded || payload.confidence === "low" || (payload.incomplete && payload.incomplete.length);
+      var n = make("p", "disclaimer reveal" + (warn ? " disclaimer--warn" : ""), note);
       card.appendChild(n);
     }
 

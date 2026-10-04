@@ -16,6 +16,7 @@ Shape (see `frontend/README.md` for the page's own contract):
     confidence       high | medium | low
     degraded         bool                      — retrieval-only view (§13)
     disclaimer       str
+    incomplete       [str]                     — parts of the question the answer did not cover
     figures          [{url, caption, page}]    — figure crops the answer drew on, shown under it
     trace            {cache_tier, model, total_seconds, verified, tokens, slots, steps[],
                       metrics: {cache, retrieval, context_tokens}}
@@ -51,10 +52,11 @@ NODE_LABELS: dict[str, tuple[str, str]] = {
     "assemble": ("Assembled the context", "normal"),
     "generate": ("Wrote the answer", "normal"),
     "verify": ("Verified every number", "checked"),
+    "complete": ("Checked every part was answered", "checked"),
     "cache_write": ("Cached the answer", "normal"),
 }
 # nodes whose presence says nothing to a reader when they did no work
-_QUIET_NODES = {"cache_write", "rerank", "compress"}
+_QUIET_NODES = {"cache_write", "rerank", "compress", "complete"}
 
 
 def _fmt(value: float) -> str:
@@ -287,6 +289,20 @@ def _compression_detail(result: PipelineResult) -> str:
     return s.get("skip_reason") or "context left intact"
 
 
+def _coverage_detail(result: PipelineResult) -> str:
+    """What the completeness check concluded, in the reader's terms."""
+    c = result.coverage
+    if not c.checked:
+        return ""
+    how = "rules and a self-check" if c.method == "rules+self_check" else "rules"
+    if c.missing:
+        return f"not answered: {'; '.join(c.missing)} ({how})"
+    n = len(c.parts)
+    if n == 0:
+        return f"no separate parts to check ({how})"
+    return f"{n} of {n} part{'s' if n != 1 else ''} answered ({how})"
+
+
 def _steps(result: PipelineResult) -> list[dict[str, Any]]:
     """The method rail: one entry per node that ran, in pipeline order, with what it decided."""
     detail_for: dict[str, str] = {
@@ -315,6 +331,7 @@ def _steps(result: PipelineResult) -> list[dict[str, Any]]:
             if result.verify.passed
             else "; ".join(result.verify.issues[:2])
         ),
+        "complete": _coverage_detail(result),
         "cache_write": (
             "answer cached for the next visitor"
             if result.cache.write and result.cache.write.admitted
@@ -406,6 +423,8 @@ def answer_payload(
     figures_shown = _figures(result, cited_blocks, store)
     if figures_shown:
         payload["figures"] = figures_shown
+    if result.coverage.missing:
+        payload["incomplete"] = list(result.coverage.missing)
     if result.answer.confidence != "low":
         payload["disclaimer"] = DISCLAIMER
     if result.answer.fiscal_year_interpretation:
