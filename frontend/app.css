@@ -371,6 +371,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  min-width: 0;
+  max-width: 45vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: border-color 160ms ease;
 }
 @media (hover: hover) and (pointer: fine) {

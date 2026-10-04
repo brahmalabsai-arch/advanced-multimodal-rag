@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from rag import __version__
 from rag.api.byok import router as byok_router
 from rag.api.checks import CheckResult, fatal_failures, is_loopback_client, run_startup_checks
+from rag.api.ratelimit import RateLimiter, RateLimitMiddleware
 from rag.api.routes_admin import router as admin_router
 from rag.api.routes_ask import router as ask_router
 from rag.core.config import load_app_config, load_models_config, load_thresholds_config
@@ -91,6 +92,18 @@ async def lifespan(app: FastAPI):
     app.state.startup_seconds = None
     app.state.admin_enabled = app_cfg.dev_clock_enabled
     app.state.public_deploy = settings.public_deploy
+    limits = app_cfg.server.rate_limit
+    app.state.rate_limiter = (
+        RateLimiter(limits) if settings.public_deploy and limits.enabled else None
+    )
+    if app.state.rate_limiter is not None:
+        log.info(
+            "rate limit on: ask %d/min %d/h, key test %d/min, %d in flight",
+            limits.ask_per_minute,
+            limits.ask_per_hour,
+            limits.key_test_per_minute,
+            limits.max_in_flight,
+        )
     app.state.checks = _run_checks(app)
     sweep_task: asyncio.Task | None = None
     fatal = fatal_failures(app.state.checks)
@@ -129,6 +142,7 @@ app = FastAPI(
 app.include_router(ask_router)
 app.include_router(byok_router)
 app.include_router(admin_router)
+app.add_middleware(RateLimitMiddleware)  # a pass-through unless the lifespan installed a limiter
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 

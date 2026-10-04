@@ -42,6 +42,7 @@
   var API = "";
   var DEMO = new URLSearchParams(location.search).has("demo");
 
+  var PROVIDER_LABELS = { groq: "Groq", anthropic: "Anthropic", gemini: "Gemini" };
   var STORE = { provider: "ll.provider", key: "ll.key", model: "ll.model", answered: "ll.answered" };
   var session = { provider: "groq", key: "", model: "" };
 
@@ -98,7 +99,9 @@
     var connected = Boolean(session.key);
     var pill = el("model-pill");
     pill.hidden = !connected;
-    pill.textContent = connected ? (session.model || session.provider) + " · your key" : "";
+    // the provider, not the key test's model: that call uses the small role, answers do not
+    var label = DEMO ? "Demo" : (PROVIDER_LABELS[session.provider] || session.provider);
+    pill.textContent = connected ? label + " · your key" : "";
     el("key-status").textContent = connected ? session.provider + " · connected" : "not connected";
     el("key-status").classList.toggle("is-on", connected);
     el("connect").textContent = connected ? "Replace key" : "Test key and start";
@@ -171,6 +174,11 @@
     })
       .then(function (res) {
         if (res.ok) { return res.json(); }
+        if (res.status === 429) {
+          return res.json().catch(function () { return {}; }).then(function (body) {
+            throw new Error(body.detail || "Too many attempts. Wait a minute and try again.");
+          });
+        }
         if (res.status === 401 || res.status === 403) {
           throw new Error("That key was rejected by " + tried + ". Check it and paste it again.");
         }
@@ -397,6 +405,7 @@
     return res.json().then(function (body) {
       err.detail = body && (body.detail || body.message);
       if (typeof err.detail !== "string") { err.detail = ""; }
+      err.limit = body && body.limit;          // "rate" | "busy" when this server refused it
       throw err;
     }, function () { throw err; });
   }
@@ -591,7 +600,13 @@
     var body = err.detail || "The request did not complete. Try again.";
     var offerKey = false;
 
-    if (err.status === 401 || err.status === 403) {
+    if (err.limit === "rate") {
+      title = "One moment";
+      body = err.detail;
+    } else if (err.limit === "busy") {
+      title = "The demo is busy";
+      body = err.detail;
+    } else if (err.status === 401 || err.status === 403) {
       title = "That key was rejected";
       body = "The provider turned the key down. Paste it again, or switch provider.";
       offerKey = true;

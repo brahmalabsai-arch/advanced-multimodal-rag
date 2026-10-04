@@ -153,6 +153,25 @@ class ModelsConfig(BaseModel):
 # ----------------------------------------------------------------------------- app.yaml
 
 
+class RateLimitConfig(BaseModel):
+    """Per-address limits and an in-flight cap, applied only on a public deploy (D-70)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    ask_per_minute: int = Field(default=6, ge=0)  # 0 disables that window
+    ask_per_hour: int = Field(default=60, ge=0)
+    key_test_per_minute: int = Field(default=5, ge=0)
+    max_in_flight: int = Field(default=2, ge=1)  # questions running at once, all visitors
+    max_clients: int = Field(default=10000, ge=10)  # addresses tracked in memory
+    # first header present wins; Cloudflare (in front of Render) sets both and overwrites any
+    # client-supplied value. X-Forwarded-For is deliberately absent: Render appends to it, so
+    # its first entry is whatever the client sent.
+    client_ip_headers: list[str] = Field(
+        default_factory=lambda: ["cf-connecting-ip", "true-client-ip"]
+    )
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -163,6 +182,7 @@ class ServerConfig(BaseModel):
     # outlives the timeout answers 504 (the worker thread finishes in the background).
     max_question_chars: int = Field(default=1000, ge=16, le=20000)
     request_timeout_seconds: float = Field(default=120.0, gt=0)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 
 class DevClockConfig(BaseModel):
