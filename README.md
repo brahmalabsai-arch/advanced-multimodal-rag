@@ -4,9 +4,18 @@ Retrieval-augmented question answering over a company's annual report: narrative
 tables, charts and diagrams in one ChromaDB index; hybrid retrieval with glossary expansion and a
 gated reranker; a rules-first compression classifier with a numeric fidelity guard; a two-tier
 semantic cache with a slot guard, TTL classes and Redis-style LFU eviction; deterministic ratio
-maths; page-level citations; a localhost UI with a debug panel, a cache panel and an ops panel.
-Built and evaluated on Groq's free tier; every "advanced" component ships with the measurement
-that justifies — or rejects — it.
+maths; a completeness check that every part of a question was answered; in-session memory for
+follow-up questions; page-level citations; a chat page that shows how each answer was built. Built and evaluated on Groq's free tier; every
+"advanced" component ships with the measurement that justifies — or rejects — it.
+
+**Live demo: [advanced-multimodal-rag.onrender.com](https://advanced-multimodal-rag.onrender.com)**
+— bring your own model key (a free [Groq](https://console.groq.com/keys) key works). The key is
+used for your requests only and never stored; see [Live demo and deployment](#live-demo-and-deployment).
+
+<p align="center">
+  <img src="docs/media/demo.gif" width="760"
+       alt="Asking about NVIDIA's five-layer cake: the pipeline stages run, the answer arrives with NVIDIA's diagram beneath it, and a citation opens page 3 of the filing">
+</p>
 
 **The demo corpus is NVIDIA's FY2026 combined annual report** (Annual Review + Proxy Statement +
 Form 10-K, 175 pages), and the companion documents below are written against it. Nothing in the
@@ -25,30 +34,35 @@ is the next milestone — see [Roadmap and deferred decisions](#roadmap-and-defe
 | [docs/implementation_plan.md](docs/implementation_plan.md) | Phase-by-phase tasks and exit criteria |
 | [docs/reports/](docs/reports/) | Every measurement referenced below |
 
-**Build status (2026-09-19): Phase 8 complete — backend-complete gate.** Phases 0–7 built the
-pipeline and produced the evidence; Phase 8 hardened it (degrade modes, input limits, startup
-checks, loopback guard, coverage gate, model-swap dry run) and rehearsed the runbook from a fresh
-clone. The next decisions — advanced models (F1), online deployment (F2), multi-turn (F3) — are
-deliberately *not* made here.
+**Build status (2026-10-04): Phase 9 complete — deployed.** Phases 0–7 built the pipeline and
+produced the evidence; Phase 8 hardened it (degrade modes, input limits, startup checks, loopback
+guard, coverage gate, model-swap dry run) and rehearsed the runbook from a fresh clone. Phase 9
+(decision F2) put it online: bring-your-own-key, a serve-only container on Render's free plan, a
+per-visitor rate limit, a redesigned chat page, and a completeness check for multi-part
+questions; in-session memory (F3) followed, so a follow-up such as "and gross profit?" is
+understood. Advanced models (F1) and memory across sessions remain open.
 
 ---
 
 ## Contents
 
-1. [What it does, in one request](#what-it-does-in-one-request)
-2. [Runbook: fresh clone to first answer](#runbook-fresh-clone-to-first-answer)
-3. [Using it: UI, CLI, API](#using-it-ui-cli-api)
-4. [The cache walkthrough](#the-cache-walkthrough)
-5. [Component by component, with the reasoning](#component-by-component-with-the-reasoning)
-6. [Evidence: all reports](#evidence-all-reports)
-7. [Robustness and security (Phase 8)](#robustness-and-security-phase-8)
-8. [Configuration](#configuration)
-9. [Model swap: the F1 checklist](#model-swap-the-f1-checklist)
-10. [Repository layout](#repository-layout)
-11. [Tests, lint, coverage](#tests-lint-coverage)
-12. [Roadmap and deferred decisions](#roadmap-and-deferred-decisions)
-13. [Known limitations](#known-limitations)
-14. [Licence](#licence)
+- [Advanced Multimodal RAG — Annual Report Analysis](#advanced-multimodal-rag--annual-report-analysis)
+  - [Contents](#contents)
+  - [What it does, in one request](#what-it-does-in-one-request)
+  - [Live demo and deployment](#live-demo-and-deployment)
+  - [Runbook: fresh clone to first answer](#runbook-fresh-clone-to-first-answer)
+  - [Using it: page, CLI, API](#using-it-page-cli-api)
+  - [The cache walkthrough](#the-cache-walkthrough)
+  - [Component by component, with the reasoning](#component-by-component-with-the-reasoning)
+  - [Evidence: all reports](#evidence-all-reports)
+  - [Robustness and security](#robustness-and-security)
+  - [Configuration](#configuration)
+  - [Model swap: the F1 checklist](#model-swap-the-f1-checklist)
+  - [Repository layout](#repository-layout)
+  - [Tests, lint, coverage](#tests-lint-coverage)
+  - [Roadmap and deferred decisions](#roadmap-and-deferred-decisions)
+  - [Known limitations](#known-limitations)
+  - [Licence](#licence)
 
 ---
 
@@ -61,8 +75,9 @@ flowchart LR
         DOC --> CH[structure-first semantic chunks<br/>table chunks + row facts<br/>figure crops + vision descriptions]
         CH --> IDX[(data/index<br/>Chroma bge-small · BM25 · sidecars · manifest)]
     end
-    subgraph online["Online — make serve (.venv, 127.0.0.1:8000)"]
-        Q[question] --> S[slots<br/>rules, no LLM]
+    subgraph online["Online — make serve (127.0.0.1:8000) or the deployed container"]
+        Q[question<br/>+ recent turns] --> CD[condense<br/>follow-up → standalone]
+        CD --> S[slots<br/>rules, no LLM]
         S --> CL{cache lookup<br/>L1 exact / L2 semantic<br/>+ slot guard}
         CL -- hit --> A[answer + citations]
         CL -- miss --> SG{scope gate}
@@ -75,8 +90,9 @@ flowchart LR
         K --> AS[assemble<br/>2,500-token budget · figure images]
         AS --> G[generate<br/>large role · vision role]
         G --> V[verify<br/>numbers traceable · citations valid]
-        V -- pass --> CW[cache write<br/>admission · TTL class · LFU]
-        V -- fail once --> G
+        V --> CO[completeness<br/>every part answered]
+        CO -- pass --> CW[cache write<br/>admission · TTL class · LFU]
+        CO -- gap or verify failure, once --> G
         G -. model failed .-> DG[degraded view<br/>top cited passages, never cached]
         CW --> A
     end
@@ -105,6 +121,82 @@ Headline measurements (details and caveats in [Evidence](#evidence-all-reports))
 | Cache hit p50 / full pipeline p50 | 40 ms / 4.8 s; 479 MB peak RSS; 5.6 s to first request | `local_resource_profile.md` |
 | Coverage of the deterministic modules | 97.1 % (gate ≥ 90 % per module) | `coverage_phase8.md` |
 | Model-swap dry run (`anthropic`, `gemini` templates) | pass, no network | `model_swap_dry_run.md` |
+| Multi-part questions from a live session (6, e.g. "gross profit *and* revenue growth") | every part answered, first attempt (before the fix, each two-part question lost one part) | D-69 · `tests/test_coverage.py` |
+| Follow-up questions rewritten correctly (12 scripted shapes: metric swap, period shift, bare *why*, references, comparisons) | 12/12 in two runs, judged by the slot extractor; p50 0.6 s | `conversation_memory.md` |
+| Deployed container under Render's free-plan limits (512 MiB, 0.1 CPU, Linux) | 364 MiB at rest, 370 MiB after 3 questions | `.github/workflows/deploy-check.yml` |
+
+---
+
+## Live demo and deployment
+
+**[advanced-multimodal-rag.onrender.com](https://advanced-multimodal-rag.onrender.com)**
+
+1. Open the page; it asks for a model key once. Pick **Groq** (a free key from
+   [console.groq.com/keys](https://console.groq.com/keys) is enough), **Anthropic** or **Gemini**,
+   paste the key, and press **Test key and start** — one minimal call proves the key before you ask
+   anything.
+2. Ask a question, or pick a suggestion. While it works you see the pipeline stages; the answer
+   arrives with its headline figure, the prose with inline page markers, any diagram it drew on,
+   and "Read from" chips that open the cited page of the filing.
+3. **How the agent answered this** (the floating bubble) opens the method for the answer on
+   screen: latency, similarity to the answer cache, the top semantic (cosine) and fused (RRF)
+   scores, every pipeline step with its timing, and the top passages retrieved.
+4. Ask a follow-up — "and gross profit?", "why did it fall?", "and the year before?". The page
+   remembers the conversation in your browser tab, so the follow-up is understood against it; the
+   panel's first step shows how it was read. A reload keeps the conversation; **New chat**
+   forgets it.
+5. The sidebar holds the key, **Cache this session** (which answers came from the cache, which were
+   saved to it) and **About this build** (the evaluation numbers).
+
+<p align="center">
+  <img src="docs/media/follow-up.gif" width="760"
+       alt="A new chat: the revenue growth rate is asked, then 'And gross profit?' is answered as the gross profit growth rate, and the method panel shows how the follow-up was read">
+</p>
+
+<p align="center">
+  <img src="docs/media/multi-part.gif" width="760"
+       alt="A two-part question answered with both growth rates, then the 'How the agent answered this' panel opening">
+</p>
+
+| The method behind an answer | The sidebar: key and session cache | Phone |
+|---|---|---|
+| <img src="docs/media/how-it-answered.png" width="420" alt="The method panel: latency, cache similarity, cosine and RRF scores, every pipeline step with timings, the top passages"> | <img src="docs/media/sidebar.png" width="420" alt="The sidebar with the connected key and five answers marked saved to or served from the cache"> | <img src="docs/media/mobile.png" width="190" alt="The follow-up answer at phone width"> |
+
+**Memory.** The conversation lives in your browser tab and nowhere else: the page sends the last
+10 turns with each question, in compact form (the question, how it was read, a one-line summary
+of the answer), and the server keeps nothing. A question that reads like a follow-up is rewritten
+into a standalone question by one short model call; a question that stands on its own costs
+nothing extra (D-71).
+
+**Your key.** It travels in a request header over HTTPS, is used for that request only, and is
+never written anywhere: the server holds no provider key of its own, refuses any question that
+arrives without one, and masks the key by exact value in its logs, traces and usage ledger
+(D-66). Search, ratio arithmetic, citation checking and the cache run without a model; the key
+pays for the model calls — the written explanation, plus a short follow-up rewrite or self-check
+where one is needed — and a cached answer costs no tokens at all. On a free Gemini key the
+answers come from `gemini-3.5-flash-lite` (D-72). When a key's daily quota is spent, the page
+says so plainly and suggests the API console or another provider; switching provider keeps the
+conversation (D-73).
+
+**The free plan.** One instance with 512 MB and a tenth of a CPU, which sleeps after 15 idle
+minutes: the first question after a quiet spell waits up to a minute while it wakes. Each visitor
+may ask 6 questions a minute and 60 an hour, and at most 2 questions run at once across all
+visitors (D-70); over a limit the page says how long to wait.
+
+**How it is deployed.** Render's build cannot run ingestion (Docling and PyTorch are not in the
+serving image, and the parse takes ~35 minutes), so the index travels as a GitHub release asset
+(`v1.1-index`, 72 MB) and is downloaded at build time. A GitHub Actions workflow builds the same
+image and runs it capped to the free plan's limits before anything is deployed; it fails on an
+out-of-memory kill, a failed startup check, a reachable admin route, an answer without a key, or
+a key shape in the logs. The full runbook, including how to deploy your own copy, is
+[DEPLOY.md](DEPLOY.md).
+
+| | Localhost (`make serve`) | Deployed (`deploy/`) |
+|---|---|---|
+| Key | yours, from `.env` | the visitor's, per request |
+| `APP_ENV` / admin routes | `dev` / enabled | `prod` / 404 |
+| Request guard | loopback peers only | the platform proxy; per-visitor rate limit |
+| `/api/ask` payload | page payload + full `debug` | page payload only |
 
 ---
 
@@ -140,7 +232,7 @@ cp /path/to/2026_NVIDIA_ANNUAL_REPORT.pdf data/raw/
 .venv-ingest/Scripts/python -m rag.ingest.run                       # make ingest
 
 # 4. Checks (no model calls)
-.venv/Scripts/python -m pytest                                     # make test   (~45 s)
+.venv/Scripts/python -m pytest                                     # make test   (~60 s)
 .venv/Scripts/python scripts/check_profile.py --profile all --dry-run   # make check-profile
 
 # 5. Serve and ask
@@ -184,16 +276,20 @@ Ingestion stages, each writing plain files so later stages never import Docling:
 
 ---
 
-## Using it: UI, CLI, API
+## Using it: page, CLI, API
 
-**UI (`http://127.0.0.1:8000`).** An ask box with a *bypass cache* toggle; the rendered answer
-with clickable `[C1]` / `[K1]` citation chips (page-thumbnail modal, figure image for visual
-answers); a **cache panel** (tier, similarity, guard keys, admission decision, TTL class, L1/L2
-counts, purge and sweep buttons, dev-clock buttons +1d / +7d / +30d / reset); a **debug panel**
-(slots, scope decision, intent rule, expansion queries, dense/BM25/RRF scores per candidate,
-rerank gate, compression decision per chunk, calculator inputs and result, verification, tokens
-and latency per node); and an **ops panel** (hit rate over time, tokens by role, failures,
-decision mix, per-node latency percentiles) fed by `GET /api/admin/stats`.
+**Page (`http://127.0.0.1:8000`).** The same page as the live demo (see above): chat with
+in-session memory, figures under the answer, citation chips that open the page, the "How the
+agent answered this" panel and the session cache list. Locally it asks for a key too; `?demo=1` answers from a canned payload
+with no key and no network. The page and its payload contract are documented in
+[frontend/README.md](frontend/README.md).
+
+The Phase 6–8 developer panels (cache, debug, ops) were retired with the Phase 9 page; their data
+is still served in `dev`. `/api/ask` returns the full pipeline payload under `debug` — slots,
+scope decision, intent rule, expansion queries, dense/BM25/RRF scores per candidate, rerank gate,
+compression decision per chunk, calculator inputs, verification, completeness, tokens and
+latency per node — and the admin routes below expose the cache, the dev clock and the ops
+aggregation.
 
 **CLI.**
 
@@ -208,7 +304,8 @@ decision mix, per-node latency percentiles) fed by `GET /api/admin/stats`.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/ask` `{question, bypass_cache}` | Answer + citations + `cache` + `debug` (+ `degraded` flag, `warning`) |
+| `POST /api/ask` `{question, bypass_cache, history}` | Headers `X-Provider` + `X-Provider-Key` (required when deployed). `history` is the conversation's recent turns (`[{question, standalone, summary}]`, optional). The page payload: answer, `standalone_question`, headline figure, citations with inline refs, figures, trace steps and metrics, `incomplete`, `degraded`, `quota`; plus `debug` in `dev` |
+| `POST /api/key/test` | Same headers; one minimal call proves the key (`200 {model}`, `401` rejected) |
 | `GET /api/trace/{request_id}` | The trace line written for that request (`data/logs/traces.jsonl`) |
 | `GET /api/figures/{id}`, `GET /api/pages/{n}` | Figure crops and page thumbnails |
 | `GET /healthz`, `GET /readyz` | Liveness; readiness with startup checks, corpus version, limits |
@@ -234,13 +331,16 @@ revert, time-anchored 1-day TTL, 30-day TTL with the sweeper, purge. Scripted:
 .venv/Scripts/python scripts/cache_walkthrough.py --report docs/reports/cache_walkthrough.md
 ```
 
-In the browser: start `make serve`, then follow the same steps by hand — ask G1, ask it again
-(L1), restart and ask again (L2 → promoted to L1), ask a paraphrase (L2, similarity ≈ 0.87), ask
-the FY2025 variant (MISS: period guard), toggle *bypass*, edit `retrieval.final_k` in
-`thresholds.yaml` and restart (MISS: `retrieval_config_hash` changed; revert → hit again), ask
-"When is NVIDIA's annual meeting?" then press **+1d** (time-anchored TTL expired), press **+30d**
-and ask G1 (30-day TTL expired; the sweeper removes it), **reset** and **purge**. The last
-scripted pass is [docs/reports/cache_walkthrough.md](docs/reports/cache_walkthrough.md) (10/10).
+The steps: ask G1, ask it again (L1), restart and ask again (L2 → promoted to L1), ask a
+paraphrase (L2, similarity ≈ 0.87), ask the FY2025 variant (MISS: period guard), bypass, edit
+`retrieval.final_k` in `thresholds.yaml` and restart (MISS: `retrieval_config_hash` changed;
+revert → hit again), ask "When is NVIDIA's annual meeting?" and move the dev clock +1 day
+(time-anchored TTL expired), +30 days and ask G1 (30-day TTL expired; the sweeper removes it),
+reset and purge. The browser panel that drove these by hand was retired with the Phase 9 page;
+`--api` drives the same admin endpoints (`/api/admin/clock`, `/api/admin/cache/*`) on a dev
+server. In the page itself, the sidebar's **Cache this session** and the "How the agent answered
+this" panel show each answer's tier and similarity. The last scripted pass is
+[docs/reports/cache_walkthrough.md](docs/reports/cache_walkthrough.md) (10/10).
 
 ---
 
@@ -269,9 +369,14 @@ measurement. Null and negative results are kept on purpose (rule G5).
 | **Eviction** | Redis `volatile-lfu` semantics: Morris counter (log factor 10, init 5), 1-day decay, exact victim choice, stale-version records first; benchmarked against LRU, FIFO, MRU, `volatile-ttl`, random, TTL-only, LFU-no-decay | Best correct-hit rate at capacity 100 (73.5 %); LRU wins by 5.5 pp at capacity 25 only, short of the promotion rule (≥ 5 pp at ≥ 2 capacities); eviction is inert at demo scale | D-09, D-30, D-32 · `cache_policy_benchmark.md` |
 | **Generation contract** | JSON `Answer` (markdown, figures used, citations, confidence, answer class); Groq JSON mode + Pydantic validation + one corrective retry; `large` role text, `vision` role with bounded images | The verifier needs structure; citations are mandatory; the vision request is sized to Groq's OTPM/ITPM buckets so it is not rejected client-side | D-33, D-38, D-52, D-55 · `generator_check.md` |
 | **Verifier** | Every number in the answer must appear in the context or a calculation (percent form of a ratio allowed); every citation must exist; one regeneration on failure, then `low` confidence + warning | Faithfulness is enforced, not hoped for — which is why RAGAS faithfulness is 1.00 and the interesting RAGAS number is context precision | D-39 · `ragas_claude.md` |
+| **Completeness check** | After the verifier: rules first (every calculation result and every requested value must appear in the answer), then — only for a multi-part question the rules cannot fully see — one `small`-role self-check that lists the asks and flags any left unanswered. A gap shares the verifier's single regeneration, with a note naming the block that holds the value; still incomplete → stated on the page, never cached. The calculator computes year-over-year changes for *every* metric named, and bare "profit" reads as net income | The verifier passes an answer that skips half the question, because every number it *does* state is traceable. A live session showed exactly that: "growth of profit and revenue" answered one part and called the other "not in the filing", and which part survived depended on word order. After the fix, all six questions from that session were answered in full on the first attempt | D-69 · `tests/test_coverage.py` |
+| **In-session memory** | The page keeps the conversation in the visitor's tab and sends the last 10 turns (compact, ≤ 1,500 tokens) with each question; a first node, `condense`, decides by rules whether the question needs them and only then rewrites it into a standalone question with one `small` call; every later node — the cache included — works on that question. The rewrite is the first step of the method panel | A stateless server keeps the BYOK promise (nothing stored) and survives the free instance sleeping; keying the cache on the standalone question means "and gross profit?" can never hit by its wording. The evaluation caught two defects before release: the rewrite dropped the *growth rate* when only the metric changed, and Groq's JSON mode rejected rewrites outright — now plain text | D-71 · `conversation_memory.md`, `tests/test_condense.py` |
 | **Model layer** | Roles (`small`, `large`, `vision`) resolved through profiles in `models.yaml`; client-side RPM/TPM/OTPM/ITPM pacing; retries honouring `retry-after`; usage ledger; lazy provider imports | Groq free-tier limits are per model and partly undocumented (D-52); pacing on the client is what made the build fit; the swap to Anthropic/Gemini is configuration (dry-run validated) | D-27, D-45, D-50, D-52 · `model_swap_dry_run.md` |
 | **Degrade modes** | Model failure → retrieval-only view with citations, flagged `degraded`, never cached; vision failure → text model on description + table | The 429 and the provider-400 paths were both hit repeatedly during evaluation; a finance user still gets the cited passages and the calculator output | §13 · `tests/test_hardening.py` |
-| **Localhost UI** | FastAPI + one uvicorn worker + vanilla HTML/JS (vendored marked + DOMPurify), panels added phase by phase | One process, one L1, one Chroma writer; no build step; the debug panel is the acceptance test for every component (NFR-10) | D-33, D-44, D-48 |
+| **Page** | FastAPI + one uvicorn worker + vanilla HTML/CSS/JS (vendored marked + DOMPurify, self-hosted fonts): chat thread, figures under the answer, a "how the agent answered" panel, a sidebar for the key, the session cache and the build's numbers | One process, one L1, one Chroma writer; no build step; no third-party request at runtime, which matters on a page that asks for a key. The debug payload remains the acceptance surface in `dev` (NFR-10) | D-33, D-44, D-48 · `frontend/README.md` |
+| **Bring-your-own-key** | `X-Provider` / `X-Provider-Key` per request; a client built per request with every server key blanked; the key masked by exact value in logs, traces and ledger; one pipeline per provider over one shared index, cache entries separated by provider | A public URL on the owner's key would let any visitor spend the owner's quota; BYOK makes the server hold no secret at all | D-66, D-67, D-68 · `tests/test_byok.py` |
+| **Rate limit** | Per visitor address: 6 questions a minute, 60 an hour, 5 key checks a minute; at most 2 questions in flight across visitors; address from Cloudflare's `CF-Connecting-IP`, never the client-controlled `X-Forwarded-For` | BYOK protects the token quota, not the CPU: a question spends 1–4 s of a 0.1-CPU instance before any model call, so one looping client would starve every other visitor | D-70 · `tests/test_ratelimit.py` |
+| **Deployment** | Serve-only Docker image (no Docling, no PyTorch), index as a release asset, Render blueprint, CI that runs the image under the free plan's limits before deploy | The build cannot run ingestion; the memory headroom (~140 MiB) is measured on Linux under the real cap rather than estimated on a laptop | D-68 · `DEPLOY.md` |
 
 ---
 
@@ -295,7 +400,8 @@ measurement. Null and negative results are kept on purpose (rule G5).
 | What does it cost to run locally? | [local_resource_profile.md](docs/reports/local_resource_profile.md) |
 | Are the non-functional requirements met? | [nfr_results.md](docs/reports/nfr_results.md) |
 | Are the deterministic modules covered? | [coverage_phase8.md](docs/reports/coverage_phase8.md) |
-| Do the inactive model templates validate? | [model_swap_dry_run.md](docs/reports/model_swap_dry_run.md) |
+| Do the model profiles validate? | [model_swap_dry_run.md](docs/reports/model_swap_dry_run.md) |
+| Are follow-up questions understood? | [conversation_memory.md](docs/reports/conversation_memory.md) |
 | Does the runbook work from a fresh clone? | [fresh_clone_rehearsal.md](docs/reports/fresh_clone_rehearsal.md) |
 
 Reproduce any of them (model-free ones first):
@@ -319,7 +425,7 @@ cached answers never inflate accuracy and evaluation traffic is separable in the
 
 ---
 
-## Robustness and security (Phase 8)
+## Robustness and security
 
 | Concern | Behaviour | Where |
 |---|---|---|
@@ -327,11 +433,13 @@ cached answers never inflate accuracy and evaluation traffic is separable in the
 | Vision model unavailable | The `large` text model answers from the figure description + companion table; the figure is still shown | `generate.py`, D-55 |
 | Bad input | 422 for empty / whitespace, over `server.max_question_chars` (1,000), control characters (binary pasted), or no letter or digit | `routes_ask.py` `validate_question` |
 | Slow request | 504 after `server.request_timeout_seconds` (120); the worker thread finishes and still writes its trace | `routes_ask.py` |
-| Startup | Checks: `bind` is loopback (fatal), `admin` routes disabled outside dev, `secrets` present for the active profile's providers (names only), `index` manifest present and self-consistent — `corpus_version` recomputes, `chunks_total` matches `chunks.jsonl`, embedder alias matches `thresholds.yaml` (fatal). Results in `/readyz` | `api/checks.py` |
-| Network exposure | Bound to `127.0.0.1`; a request from a routable peer address is refused with 403; admin and dev-clock routes 404 unless `APP_ENV=dev` | `api/main.py`, NFR-12 |
-| Secrets | Keys are `SecretStr`, only in `.env` (gitignored); logs redact registered values and key shapes (`gsk_…`, `sk-ant-…`, `AIza…`); the ledger and trace store counts and ids, never prompts | `core/logging.py`, `tests/test_logging_redaction.py`, `tests/test_hardening.py` |
+| Startup | Checks: `bind` is loopback unless deployed (fatal), `public` — a public deploy without `BYOK_ONLY`, or with admin routes on, refuses to start (fatal), `admin` routes disabled outside dev, `secrets` present for the active profile's providers (names only; under `BYOK_ONLY` none are needed and a stray one is named), `index` manifest present and self-consistent — `corpus_version` recomputes, `chunks_total` matches `chunks.jsonl`, embedder alias matches `thresholds.yaml` (fatal). Results in `/readyz` | `api/checks.py` |
+| Network exposure | Localhost: bound to `127.0.0.1`, a request from a routable peer is refused with 403. Deployed: behind the platform proxy, every question needs the visitor's key (401 without), per-visitor rate limit and an in-flight cap (429 / 503 with `Retry-After`). Admin and dev-clock routes 404 unless `APP_ENV=dev` | `api/main.py`, `api/ratelimit.py`, NFR-12 |
+| Secrets | Server keys are `SecretStr`, only in `.env` (gitignored), and absent from the deployed container; a visitor's key lives for one request and is masked by exact value; logs also redact key shapes (`gsk_…`, `sk-ant-…`, `AIza…`); the ledger and trace store counts and ids, never prompts | `api/byok.py`, `core/logging.py`, `tests/test_byok.py`, `tests/test_logging_redaction.py` |
+| Spent daily quota | Told apart from a per-minute limit (Groq's "per day" limits, Google's per-day quota id) and said plainly: the key's daily limit has been hit — check the API console or change the provider, and the chat is kept. Not retried; the turn does not enter the conversation memory | `rag/llm.py`, `api/byok.py`, D-73 |
+| Incomplete answer | A part of the question left unanswered is regenerated once, then stated on the page (`incomplete`) and never cached | `query/coverage.py`, D-69 |
 | Prompt injection in the PDF | Context is data: answer-only-from-context contract, verifier, DOMPurify on render | `generate.py`, `frontend/` |
-| Silent financial error | Test-first deterministic modules, coverage gate ≥ 90 % each (97.1 % overall) | `scripts/coverage_gate.py` |
+| Silent financial error | Test-first deterministic modules, coverage gate ≥ 90 % each (97.2 % overall) | `scripts/coverage_gate.py` |
 
 ---
 
@@ -339,10 +447,10 @@ cached answers never inflate accuracy and evaluation traffic is separable in the
 
 | File | Contents |
 |---|---|
-| `.env` | `GROQ_API_KEY`, `MODEL_PROFILE` (default `groq_build`), `APP_ENV` (`dev` / `test` / `prod`); `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` only after F1 |
+| `.env` | `GROQ_API_KEY`, `MODEL_PROFILE` (default `groq_build`), `APP_ENV` (`dev` / `test` / `prod`); `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` only after F1. Deployment flags `BYOK_ONLY` and `PUBLIC_DEPLOY` (set in the image, never locally) |
 | `config/models.yaml` | Profiles: `groq_build` (active), `groq_qwen_large` (generator check), `anthropic` and `gemini` (validated templates). Per-model `pacing` (rpm / tpm / otpm / itpm), `provider_kwargs`, optional `price_usd_per_mtok` |
-| `config/app.yaml` | Bind address and port, `max_question_chars`, `request_timeout_seconds`, dev-clock enablement, data paths |
-| `config/thresholds.yaml` | Retrieval (embedder lock, k's, RRF), expansion (glossary, filters, HyDE off), rerank (off, gate), compression (mode, Stage B thresholds, `stage_b: rules\|learned`), cache (thresholds, TTL seconds, L1 size, eviction constants, sweep interval) |
+| `config/app.yaml` | Bind address and port, `max_question_chars`, `request_timeout_seconds`, `rate_limit` (per-visitor windows, in-flight cap, trusted client-address headers; deployed only), `conversation` (turns and tokens a follow-up rewrite may see: 10 / 1,500), dev-clock enablement, data paths |
+| `config/thresholds.yaml` | Retrieval (embedder lock, k's, RRF), expansion (glossary, filters, HyDE off), rerank (off, gate), compression (mode, Stage B thresholds, `stage_b: rules\|learned`), completeness (rules, self-check), cache (thresholds, TTL seconds, L1 size, eviction constants, sweep interval) |
 | `config/glossary.yaml` | 325 metric synonyms, formula cues, `lexicons.ask_type`, `lexicons.topic_terms` |
 | `config/fiscal_calendar.yaml` | Fiscal year ends and the bare-year resolution rule |
 | `config/formulas.yaml` | Deterministic formula registry for the calculator |
@@ -403,7 +511,9 @@ package as a warning, not a failure — the template is still valid.
 config/         models.yaml · app.yaml · thresholds.yaml · glossary.yaml · fiscal_calendar.yaml · formulas.yaml
 data/           raw/ parsed/ index/ cache/ logs/     (gitignored; you supply the PDF, `make ingest` builds the rest)
 docs/           problemstatement.md · architecture.md · implementation_plan.md · reports/ (19 reports)
-frontend/       index.html app.css app.js vendor/ (marked, DOMPurify) — no build step
+deploy/         Dockerfile (serve-only) · render.yaml (Render blueprint)       DEPLOY.md is the runbook
+.github/        workflows/deploy-check.yml — the image under the free plan's limits, before any deploy
+frontend/       index.html app.css app.js fonts/ vendor/ (marked, DOMPurify) demo-answer.json — no build step
 src/rag/
   core/         settings.py config.py logging.py tokens.py pacing.py ledger.py traces.py clock.py console.py
                 schema.py (chunk metadata contract) embeddings.py (fastembed) bm25.py
@@ -411,16 +521,21 @@ src/rag/
   ingest/       run.py parse.py elements.py sections.py validate.py figures.py report.py
                 sentences.py chunk_semantic.py tables.py enrich.py index.py
   query/        store.py slots.py scope.py analyze.py retrieve.py rerank.py assemble.py generate.py verify.py
+                coverage.py (completeness check) · condense.py (follow-up → standalone question)
   calc/         calculator.py
   compress/     features.py classifier.py compressors.py fidelity.py pipeline.py classifier_weights.json
   cache/        records.py service.py l1.py l2.py lfu.py ttl.py admission.py versions.py sweeper.py
   api/          main.py routes_ask.py routes_admin.py ops.py checks.py
+                byok.py pipelines.py payload.py (page payload) ratelimit.py
   graph.py      LangGraph pipeline (slots → cache → scope → analyze → retrieve → rerank → compress
-                → calculate → assemble → generate → verify → cache write; degrade path)
+                → calculate → assemble → generate → verify → complete → cache write; condense first;
+                degrade path)
 eval/           golden.jsonl (48 questions) · run_eval.py · retrieval_ablation.py · compression_ablation.py
                 build_cache_pairs.py · cache_threshold_calibration.py · cache_benchmark.py · train_classifier.py
-                ragas_eval.py · resource_profile.py · nfr_results.py · write_report.py · results/ (gitignored)
+                ragas_eval.py · resource_profile.py · nfr_results.py · write_report.py · conversation_memory.py
+                results/ (gitignored)
 scripts/        smoke_llm.py · inspect_index.py · ask_cli.py · cache_walkthrough.py · check_profile.py · coverage_gate.py
+                package_index.py (index → release asset)
 tests/          unit + API tests with a scripted model (no network); ingestion tests read the PDF when present
 ```
 
@@ -429,7 +544,7 @@ tests/          unit + API tests with a scripted model (no network); ingestion t
 ## Tests, lint, coverage
 
 ```bash
-.venv/Scripts/python -m pytest                    # make test      473 tests, ~45 s, no network
+.venv/Scripts/python -m pytest                    # make test      571 tests, ~60 s, no network
 .venv/Scripts/python -m ruff check . && .venv/Scripts/python -m ruff format --check .   # make lint
 .venv/Scripts/python scripts/coverage_gate.py     # make coverage  ≥ 90 % per deterministic module
 .venv/Scripts/python scripts/smoke_llm.py         # make smoke     3 Groq calls, one per role
@@ -449,8 +564,8 @@ deliberately left open (`architecture.md` §14.4), each with the evidence it nee
 |---|---|
 | **Any annual report, supplied by the user** — upload a PDF, ingest it, query it | Not built. The pipeline is already config-driven for this: the metric glossary, fiscal calendar, formula registry, section tagger and statement validator are YAML, not code, and `corpus_version` keys the index and the cache. What a second issuer needs: its fiscal calendar and synonym set, statement detection beyond the three US-GAAP statements this corpus carries, and its own golden set before any accuracy claim transfers |
 | **F1 — advanced models.** Provider, generator, whether to re-enrich figures | `model_swap_dry_run.md` (templates valid), `golden_phase4_claude.md` and `ragas_claude.md` (what Claude Sonnet 5 does on this pipeline), `generator_check.md` (Groq internal), the F1 checklist above |
-| **F2 — hosting.** Host and instance size; reranker size on that host; cache persistence; containerisation; access protection and rate limiting (D-43) | `local_resource_profile.md` (479 MB RSS, 5.6 s startup, p50 4.8 s), and the loopback guard + admin gating that a public URL would have to replace with real authentication |
-| **F3 — multi-turn.** Session ids, follow-up condensation, session-scoped L1 | §15 hook: v1 caches only self-contained queries and keys L2 on normalised text + slots, so a condensation step slots in front of `slots` without a schema change |
+| **F2 — hosting. Done (Phase 9).** | Render free plan, serve-only container, bring-your-own-key, per-visitor rate limit, CI under the real memory cap — see [Live demo and deployment](#live-demo-and-deployment) and `architecture.md` §14.4. Open: a paid instance (no sleep, more CPU) if traffic warrants it; cache persistence across restarts |
+| **F3 — multi-turn. In-session memory done (D-71).** | Follow-ups are rewritten against the conversation the page keeps in the visitor's tab; 12/12 scripted follow-up shapes correct. Open: memory across sessions or devices, which would need accounts and server-side storage — a different privacy model from BYOK |
 | **Stage C adoption.** Whether to gather ≥ 20 negative labels and switch `compression.stage_b: learned` | `stage_c_classifier.md` |
 | **Reranker.** Whether a larger corpus changes the negative result | `retrieval_ablation.md`; the gate and both rerankers are still in the code |
 
@@ -471,7 +586,15 @@ deliberately left open (`architecture.md` §14.4), each with the evidence it nee
 - **Evaluation used the `anthropic` profile** for the full golden, compression and RAGAS runs
   when the Groq daily window was exhausted (D-45 note); serving stayed on `groq_build`. The Groq
   golden re-run is partial (34/48).
-- **Single-turn only** (F3); **localhost only** (F2); **Groq free tier only** (F1).
+- **Memory is per browser tab.** Closing the tab, or **New chat**, forgets the conversation;
+  nothing is kept across sessions or devices. A follow-up whose rewrite fails is answered as typed,
+  and the method panel says so.
+- **Providers.** Evaluation and the server-side build ran on **Groq's free tier** (F1). The Gemini
+  profile was checked live on a five-turn conversation (D-72), not on the golden set; the
+  Anthropic profile has not been re-checked live since the Phase 4 evaluation.
+- **The demo runs on Render's free plan**: one instance, a tenth of a CPU, asleep after 15 idle
+  minutes. Rate-limit counters and the answer cache live in memory or on the container's disk
+  and reset on every restart or redeploy.
 - **Lexicons are hand-written** (`ask_type`, `topic_terms`, 325 synonyms) and checked against the
   report, not against real user phrasings; a missing cue costs a cache miss, never a wrong hit.
 - Before quoting a number from this repository, read the report it comes from: each one names its
