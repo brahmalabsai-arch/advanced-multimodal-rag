@@ -2,12 +2,33 @@
 
 Static single-page interface served by FastAPI. No build step, no framework, no package manager.
 
+## Layout
+
+- **Chat** is the whole page: suggestions on first load, then a thread of questions and answers,
+  with the composer pinned at the bottom. An answer shows its headline figure, the prose with
+  inline page markers (`p.141`), any figure crop it drew on (under the prose, click to enlarge),
+  the figures used (collapsed), and "Read from" chips that open the cited page.
+- **Sidebar**, collapsed to a thin rail of icons; it expands as a drawer with three sections:
+  *Model key* (provider, key, replace), *Cache this session* (every answer in this tab, and
+  whether it came from the answer cache or was saved to it; click to ask again) and *About this
+  build* (the evaluation numbers and the filing specimen).
+- **Key modal** on first launch. "Look around first" dismisses it; asking without a key reopens it.
+- **"How the agent answered this"**, a floating bubble that opens the method for the answer most
+  in view: latency, similarity to the cache, top semantic (cosine) match, top RRF score, the
+  pipeline steps with timings, and the top passages retrieved.
+
+Light theme only. Motion uses the curves in `app.css` (`--ease-out`, `--ease-drawer`) and every
+animation has a `prefers-reduced-motion` fallback that keeps fades and drops movement.
+
 ```
 frontend/
 ├── index.html
 ├── app.css
 ├── app.js
 ├── demo-answer.json      # canned response for demo mode
+├── fonts/                # self-hosted faces, committed
+│   ├── Archivo-Variable.woff2          35 KB, OFL
+│   └── SplineSansMono-Variable.woff2   36 KB, OFL
 └── vendor/
     ├── marked.min.js     # download once, commit
     └── purify.min.js     # download once, commit
@@ -16,11 +37,26 @@ frontend/
 ## Serving it
 
 ```python
-from fastapi.staticfiles import StaticFiles
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+app.mount("/", Frontend(directory="frontend", html=True), name="frontend")
 ```
 
-Mount it **after** the API routes so `/api/*` is matched first. Same origin means no CORS configuration.
+Mount it **after** the API routes so `/api/*` is matched first. Same origin means no CORS
+configuration. `Frontend` is a thin `StaticFiles` subclass in `rag/api/main.py` that pins the
+web-font media types: `mimetypes` has no `.woff2` entry on a stock Windows install, so the faces
+would otherwise be served as `application/octet-stream`.
+
+## Typefaces
+
+Archivo for language, Spline Sans Mono for anything measured. Both are variable `woff2`, both
+SIL Open Font License (licence text sits beside them), and both are **self-hosted**: the page
+makes no third-party request at runtime, which is the point on a screen that asks for an API
+key. Loading them from Google Fonts would break that promise for the sake of two files.
+
+```bash
+mkdir -p frontend/fonts
+curl -Lo frontend/fonts/Archivo-Variable.woff2   https://cdn.jsdelivr.net/npm/@fontsource-variable/archivo/files/archivo-latin-wght-normal.woff2
+curl -Lo frontend/fonts/SplineSansMono-Variable.woff2   https://cdn.jsdelivr.net/npm/@fontsource-variable/spline-sans-mono/files/spline-sans-mono-latin-wght-normal.woff2
+```
 
 ## Vendored libraries
 
@@ -51,7 +87,9 @@ Answer payload — only `answer_markdown` is required; every other field degrade
                 "caption": "current ratio, as of 25 January 2026 (FY2026)",
                 "working": "125,605 / 32,163 — USD millions"},
   "figures_used": [{"label": "Total current assets", "value": "125,605", "unit": ""}],
-  "citations":    [{"label": "Consolidated Balance Sheets", "page": 141}],
+  "citations":    [{"label": "Consolidated Balance Sheets", "page": 141,
+                    "refs": ["C1", "K1"]}],   // the inline [C1] markers that point here
+  "figures":      [{"url": "/api/figures/p3_0", "caption": "AI Is a Five-Layer Cake", "page": 3}],
   "confidence":   "high",          // low → a caution line appears above the citations
   "degraded":     false,           // true → retrieval-only notice
   "disclaimer":   "…",             // optional, shown when confidence is not low
@@ -65,19 +103,32 @@ Answer payload — only `answer_markdown` is required; every other field degrade
     "retrieval":   {"seconds": 0.31, "detail": "…"},
     "compression": {"seconds": 0.02, "detail": "…"},
     "calculator":  {"detail": "current_ratio = 125,605 / 32,163"},
-    "generation":  {"seconds": 4.3,  "detail": "…"}
+    "generation":  {"seconds": 4.3,  "detail": "…"},
+    "metrics": {
+      "cache": {"tier": "miss", "similarity": null, "threshold": 0.9,
+                "best_rejected_similarity": 0.71, "lookup_ms": 30, "written": true},
+      "retrieval": {"queries": 2, "top_similarity": 0.874, "top_rrf": 0.0325,
+                    "passages": [{"label": "Total current assets", "page": 141,
+                                  "modality": "row_fact", "similarity": 0.874, "rrf": 0.0325}]},
+      "context_tokens": 1620
+    }
   }
 }
 ```
 
-The method rail prefers `trace.steps` if you send it:
+`figures` lists at most two crops, from the strongest tier that has any: figures the answer cited,
+else figures on a page it cited, else figures attached to the model as images. A crop that fails
+to load removes itself rather than leaving a broken box. `metrics.retrieval` is absent on a cache
+hit (no search ran) and the panel says so.
+
+The method panel prefers `trace.steps` if you send it:
 
 ```jsonc
 "steps": [{"label": "…", "detail": "…", "seconds": 0.3, "tags": ["FY2026"],
            "kind": "normal" | "computed" | "checked"}]
 ```
 
-Otherwise it builds the rail from the fields above, so partial traces still render.
+Otherwise it builds the step list from the fields above, so partial traces still render.
 
 ### Error codes the UI already handles
 

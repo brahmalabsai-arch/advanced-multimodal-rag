@@ -1,5 +1,5 @@
 {
-  "answer_markdown": "Total current assets of **$125,605 million** cover total current liabilities of **$32,163 million** almost four times over, leaving working capital of **$93,442 million**.\n\nCash and marketable securities alone come to $62,556 million, so the ratio does not depend on inventory or receivables converting quickly.",
+  "answer_markdown": "Total current assets of **$125,605 million** cover total current liabilities of **$32,163 million** almost four times over, leaving working capital of **$93,442 million** [K1].\n\nCash and marketable securities alone come to $62,556 million, so the ratio does not depend on inventory or receivables converting quickly [C1].",
   "headline": {
     "value": "3.91",
     "caption": "current ratio, as of 25 January 2026 (FY2026)",
@@ -12,11 +12,11 @@
     { "label": "Marketable securities", "value": "51,951" }
   ],
   "citations": [
-    { "label": "Consolidated Balance Sheets", "page": 141 },
-    { "label": "Notes to the financial statements", "page": 148 }
+    { "label": "Consolidated Balance Sheets", "page": 141, "refs": ["C1", "K1"] }
   ],
   "confidence": "high",
   "degraded": false,
+  "disclaimer": "Figures are read from the filed report and checked against it. This is analysis of a public filing, not investment advice.",
   "trace": {
     "cache_tier": "miss",
     "model": "llama-3.3-70b",
@@ -24,20 +24,29 @@
     "verified": true,
     "tokens": { "in": 2140, "out": 260 },
     "slots": { "entity": "NVIDIA", "period": "FY2026", "formula": "current_ratio" },
-    "retrieval": {
-      "seconds": 0.31,
-      "detail": "Meaning search and keyword search merged; 8 blocks kept from 60. The glossary added two rephrasings of the question."
-    },
-    "compression": {
-      "seconds": 0.02,
-      "detail": "2 duplicate passages dropped; the balance sheet cut to 6 relevant rows. No digits were altered."
-    },
-    "calculator": {
-      "detail": "current_ratio = 125,605 / 32,163"
-    },
-    "generation": {
-      "seconds": 4.3,
-      "detail": "2,140 tokens in, 260 out, billed to your key."
+    "steps": [
+      { "label": "Read the question", "kind": "normal", "seconds": 0.01, "detail": "entity: NVIDIA, period: FY2026, formula: current_ratio" },
+      { "label": "Checked the cache", "kind": "normal", "seconds": 0.03, "detail": "no usable cached answer" },
+      { "label": "Searched the filing", "kind": "normal", "seconds": 0.31, "detail": "8 passages from 2 queries" },
+      { "label": "Trimmed the context", "kind": "normal", "seconds": 0.02, "detail": "context trimmed 2,410 → 1,620 tokens, every number checked" },
+      { "label": "Computed the ratio", "kind": "computed", "seconds": 0.0, "detail": "current_ratio = 3.91" },
+      { "label": "Wrote the answer", "kind": "normal", "seconds": 4.3, "detail": "large model, 1 attempt" },
+      { "label": "Verified every number", "kind": "checked", "seconds": 0.01, "detail": "every number traced to the filing" },
+      { "label": "Cached the answer", "kind": "normal", "seconds": 0.05, "detail": "answer cached for the next visitor" }
+    ],
+    "metrics": {
+      "cache": { "tier": "miss", "similarity": null, "threshold": 0.9, "best_rejected_similarity": 0.71, "lookup_ms": 30, "written": true },
+      "retrieval": {
+        "queries": 2,
+        "top_similarity": 0.874,
+        "top_rrf": 0.0325,
+        "passages": [
+          { "label": "Total current assets", "page": 141, "modality": "row_fact", "similarity": 0.874, "rrf": 0.0325 },
+          { "label": "Total current liabilities", "page": 141, "modality": "row_fact", "similarity": 0.861, "rrf": 0.0320 },
+          { "label": "Consolidated Balance Sheets", "page": 141, "modality": "table", "similarity": 0.842, "rrf": 0.0315 }
+        ]
+      },
+      "context_tokens": 1620
     }
   }
 }
